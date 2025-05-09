@@ -12,7 +12,7 @@ class Problem_Solver:
                  alpha = 0.1, 
                  beta = 0.1, 
                  gamma = 0.2, 
-                 tilde_sigma = 0.6, 
+                 tilde_sigma = 0.3, 
                  delta = 1, 
                  a_0 = 1, 
                  a_1 = 1, 
@@ -250,7 +250,7 @@ class Problem_Solver:
         p_guess = 1 / (2 * np.sqrt(x))
         V_guess = np.vstack([v_guess, p_guess])
 
-        solution = solve_bvp(bellman_rhs, boundary_conditions, x, V_guess, max_nodes = 10000, tol = 1e-5)
+        solution = solve_bvp(bellman_rhs, boundary_conditions, x, V_guess, max_nodes = 10000)
 
         if solution.success:
             print("Solver converged successfully.")
@@ -357,7 +357,7 @@ def main():
 
     # Define initial state and controls
     eta = 0.5 * np.ones(solver.n)  # Example control η
-    rho = 0 * np.ones(solver.n)  # Example constant control ρ
+    rho = np.zeros(solver.n)  # Example constant control ρ
 
     # Uncomment to use the Bellman solver directly
     # v_0 = solver.monte_carlo_value(
@@ -368,10 +368,8 @@ def main():
     # )
     # solver.Bellman_solver(v_0, v_1, eta, rho, if_plot=True)
 
-    solver.Bellman_solver(1, 2, eta, rho, if_plot=True)
-
     # Run the policy improvement algorithm
-    # solver.policy_improve(eta, rho, if_plot = True)
+    solver.policy_improve(eta, rho, if_plot = True)
 
 
 # Run the main function if the script is executed directly
