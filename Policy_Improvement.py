@@ -8,11 +8,11 @@ class Problem_Solver:
     def __init__(self, 
                  n = 1000, 
                  dt = 0.01, 
-                 tol = 1e-2, 
+                 tol = 1e-6, 
                  alpha = 0.1, 
                  beta = 0.1, 
                  gamma = 0.2, 
-                 tilde_sigma = 0.3, 
+                 tilde_sigma = 0.6, 
                  delta = 1, 
                  a_0 = 1, 
                  a_1 = 1, 
@@ -64,7 +64,7 @@ class Problem_Solver:
         """
         return self.a_0 + self.a_1 * x + self.a_2 * x * (1 - eta)**2 + self.a_3 * x * rho**2
 
-    def objective_func(self, x_initial, eta, rho, if_plot=False): 
+    def objective_func(self, x_initial, x_grid, eta, rho, if_plot=False): 
         """
         Simulate the stochastic process and compute the integral of the discounted reward function.
 
@@ -80,8 +80,8 @@ class Problem_Solver:
         - integral: Integral of the discounted reward function.
         """
         # Interpolate eta as a function of x
-        eta_func = lambda x_eval: np.interp(x_eval, self.x_grid, eta)
-        rho_func = lambda x_eval: np.interp(x_eval, self.x_grid, rho)
+        eta_func = lambda x_eval: np.interp(x_eval, x_grid, eta)
+        rho_func = lambda x_eval: np.interp(x_eval, x_grid, rho)
 
         t = [0]
         X = [x_initial]
@@ -127,7 +127,7 @@ class Problem_Solver:
 
         return t, X, integral
     
-    def monte_carlo_value(self, x_initial, eta, rho, epsilon = 1e-3, delta = 1e-6, M = 500, max_simulations = 5000, if_plot = False):
+    def monte_carlo_value(self, x_initial, x_grid, eta, rho, epsilon = 1e-3, delta = 1e-6, M = 500, max_simulations = 5000, if_plot = False):
         """
         Estimate the value function using Monte Carlo simulation with confidence interval and stability-based stopping rules.
 
@@ -153,7 +153,7 @@ class Problem_Solver:
         while True:
             sim += 1
             # Use the existing objective_func to simulate the path and compute the reward
-            _, _, cumulative_reward = self.objective_func(x_initial, eta, rho)
+            _, _, cumulative_reward = self.objective_func(x_initial, x_grid, eta, rho)
 
             # Update the estimated value using the updating rule
             estimated_value += (cumulative_reward - estimated_value) / sim
@@ -215,7 +215,7 @@ class Problem_Solver:
 
         return estimated_value
 
-    def Bellman_solver(self, v0, v1, eta, rho, if_plot = False):
+    def Bellman_solver(self, x_grid, v0, v1, eta, rho, if_plot = False):
         """
         Solve the Bellman equation using the shooting method with boundary value problem solver.
 
@@ -228,8 +228,8 @@ class Problem_Solver:
         """
 
         # Obtaining Markov control by interpolating eta and rho
-        eta = interp1d(self.x_grid, eta, kind = 'cubic', fill_value = 'extrapolate')
-        rho = interp1d(self.x_grid, rho, kind = 'cubic', fill_value = 'extrapolate')
+        eta = interp1d(x_grid, eta, kind = 'cubic', fill_value = 'extrapolate')
+        rho = interp1d(x_grid, rho, kind = 'cubic', fill_value = 'extrapolate')
 
         def bellman_rhs(x, V):
             v, p = V
@@ -245,12 +245,12 @@ class Problem_Solver:
         def boundary_conditions(Va, Vb):
             return [Va[0] - v0, Vb[0] - v1]
 
-        x = self.x_grid
-        v_guess = np.sqrt(x)
-        p_guess = 1 / (2 * np.sqrt(x))
+        x = x_grid
+        v_guess = x
+        p_guess = np.ones_like(x)
         V_guess = np.vstack([v_guess, p_guess])
 
-        solution = solve_bvp(bellman_rhs, boundary_conditions, x, V_guess, max_nodes = 10000)
+        solution = solve_bvp(bellman_rhs, boundary_conditions, x, V_guess, max_nodes = 1e+4, tol = 1e-4)
 
         if solution.success:
             print("Solver converged successfully.")
@@ -270,28 +270,50 @@ class Problem_Solver:
             plt.grid()
             plt.show()
 
-        return v_sol
+        return x_sol, v_sol
+    
+    def L2_norm(self, x1, x2, y1, y2): 
+        """
+        Compute the L2 norm of the difference between two arrays of different length by interpolating.
 
-    def policy_improve(self, eta_guess, rho_guess, if_plot = False): 
+        Parameters:
+        - x1: First array of x values.
+        - x2: Second array of x values.
+        - y1: First array of y values.
+        - y2: Second array of y values.
+        Returns:
+        - L2 norm of the difference.
+        """
+        if len(x1) == len(x2) and len(x1) == len(self.x_grid):
+            # If lengths are the same, directly compute the L2 norm
+            y1_interp = y1
+            y2_interp = y2
+        else:
+            # Interpolate y1 to the length of y2
+            y1_interp  = interp1d(x1, y1, kind = 'cubic', fill_value = 'extrapolate')(self.x_grid)
+            y2_interp = interp1d(x2, y2, kind = 'cubic', fill_value = 'extrapolate')(self.x_grid)
+        # Compute the normalized L2 norm
+        return np.linalg.norm(y1_interp - y2_interp) / np.sqrt(len(self.x_grid))
+
+    def policy_improve(self, eta_guess, rho_guess, if_plot=False): 
         """
         Policy improvement step for the Bellman equation.
 
         Parameters:
-        - eta_int: Control η.
-        - rho_int: Control ρ.
+        - eta_guess: Initial guess for control η.
+        - rho_guess: Initial guess for control ρ.
+        - if_plot: Whether to plot the results.
         """
-
         # Initial guess for the value function
-        v0 = self.monte_carlo_value(self.x_min, eta_guess, rho_guess, if_plot = False)
-        v1 = self.monte_carlo_value(self.x_max, eta_guess, rho_guess, if_plot = False)
+        v0 = self.monte_carlo_value(self.x_min, self.x_grid, eta_guess, rho_guess, if_plot=False)
+        v1 = self.monte_carlo_value(self.x_max, self.x_grid, eta_guess, rho_guess, if_plot=False)
 
-        v_int = self.Bellman_solver(v0, v1, eta_guess, rho_guess, if_plot = False)
+        x, v_int = self.Bellman_solver(self.x_grid, v0, v1, eta_guess, rho_guess, if_plot=False)
         iter = 0
-
         error = []
 
         while True:
-            x = self.x_grid
+            x_previous = x.copy()
             D_x_v = np.zeros_like(v_int)
             D_x_v[1:] = (v_int[1:] - v_int[:-1]) / self.h
             D_x_v[0] = D_x_v[1]
@@ -299,51 +321,58 @@ class Problem_Solver:
             eta_new = np.clip(1 - (self.alpha + self.beta * x) * (1 - x) * D_x_v / (2 * x * self.a_2), 0, 1)
             rho_new = np.maximum(0, D_x_v / (2 * self.a_3))
 
-            v0_new = self.monte_carlo_value(self.x_min, eta_new, rho_new, if_plot = False)
-            v1_new = self.monte_carlo_value(self.x_max, eta_new, rho_new, if_plot = False)
+            v0_new = self.monte_carlo_value(self.x_min, x, eta_new, rho_new, if_plot=False)
+            v1_new = self.monte_carlo_value(self.x_max, x, eta_new, rho_new, if_plot=False)
 
-            v_update = self.Bellman_solver(v0_new, v1_new, eta_new, rho_new, if_plot=False)
-            print(np.linalg.norm(v_update - v_int))
+            x, v_update = self.Bellman_solver(x, v0_new, v1_new, eta_new, rho_new, if_plot=False)
 
-            # if np.linalg.norm(v_update - v_int) <= self.tol_main:
-            #     print(f"Updated value function: {v_update}")
-            #     print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
-            #     if if_plot:
-            #         plt.figure(figsize=(10, 8))
-            #         plt.plot(x, v_update, label="Value Function")
-            #         plt.xlabel("State (x)")
-            #         plt.ylabel("Value (v)")
-            #         plt.title("Solution to Bellman ODE")
-            #         plt.legend()
-            #         plt.grid()
-            #         plt.show()
-
-            #     break
+            if self.L2_norm(x_previous, x, v_int, v_update) <= self.tol_main:
+                print(f"Updated value function: {v_update}")
+                print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
+                break
 
             if iter >= 5:
-                print("Maximum iterations reached without convergence.")
+                print(f"Maximum iterations {iter} reached.")
+                print(f"Updated value function: {v_update}")
+                print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
                 break
-            
-            error.append(np.linalg.norm(v_update - v_int))
+
+            error.append(np.log(self.L2_norm(x_previous, x, v_int, v_update)))
             iter += 1
             v_int = v_update
 
-            print(iter)
+            print(f"------------------The {iter}th iteration done: log normalized L2 norm = {error[-1]}-------------------")
 
-        plt.figure(figsize=(10, 6))
-        plt.plot(range(len(error)), error, label="Error", color='blue', marker='o')
-        plt.xlabel("Iteration")
-        plt.ylabel("Error")
-        plt.grid()
+        if if_plot:
+            # Create a figure with subplots
+            fig, axes = plt.subplots(3, 1, figsize=(10, 18))
 
-        plt.figure(figsize=(10, 8))
-        plt.plot(x, v_update, label="Value Function")
-        plt.xlabel("State (x)")
-        plt.ylabel("Value (v)")
-        plt.title("Solution to Bellman ODE")
-        plt.legend()
-        plt.grid()
-        plt.show()
+            # Plot the error over iterations
+            axes[0].plot(range(len(error)), error, label="Error", color='blue', marker='o')
+            axes[0].set_xlabel("Iteration")
+            axes[0].set_ylabel("ln(Error)")
+            axes[0].set_title("Error Convergence", fontsize = 12)  # Decreased font size
+            axes[0].grid()
+            axes[0].legend()
+
+            # Plot the value function
+            axes[1].plot(x, v_update, label="Value Function", color='purple')
+            axes[1].set_xlabel("State (x)")
+            axes[1].set_ylabel("Value (v)")
+            axes[1].set_title("Solution to Bellman ODE", fontsize = 12)  # Decreased font size
+            axes[1].legend()
+
+            # Plot the controls η and ρ
+            axes[2].plot(x_previous, eta_new, label="Control η", color='green')
+            axes[2].plot(x_previous, rho_new, label="Control ρ", color='red')
+            axes[2].set_xlabel("State (x)")
+            axes[2].set_ylabel("Control")
+            axes[2].set_title("Controls η and ρ over State", fontsize = 12)  # Decreased font size
+            axes[2].legend()
+
+            # Adjust layout and show the figure
+            plt.tight_layout()
+            plt.show()
 
         return eta_new, rho_new, v_update
 
@@ -356,17 +385,8 @@ def main():
     solver = Problem_Solver()
 
     # Define initial state and controls
-    eta = 0.5 * np.ones(solver.n)  # Example control η
-    rho = np.zeros(solver.n)  # Example constant control ρ
-
-    # Uncomment to use the Bellman solver directly
-    # v_0 = solver.monte_carlo_value(
-    #     0.1, eta, rho, epsilon=1e-3, delta=1e-7, M=500, max_simulations=5000, if_plot=True
-    # )
-    # v_1 = solver.monte_carlo_value(
-    #     0.9, eta, rho, epsilon=1e-3, delta=1e-7, M=500, max_simulations=5000, if_plot=True
-    # )
-    # solver.Bellman_solver(v_0, v_1, eta, rho, if_plot=True)
+    eta = 0.5 * np.ones(solver.n)  # Initial guess of constant control η
+    rho = np.zeros(solver.n)  # Initial guess of constant control ρ
 
     # Run the policy improvement algorithm
     solver.policy_improve(eta, rho, if_plot = True)
