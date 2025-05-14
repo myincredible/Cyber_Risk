@@ -87,7 +87,7 @@ class Problem_Solver:
         X = [x_initial]
         integral = 0.0
         discounted_f_X = 1.0
-        tol_valuefunction = 1e-6  # Tolerance for the value function
+        tol_valuefunction = 1e-2  # Tolerance for the value function
 
         while discounted_f_X > tol_valuefunction: 
             # Evaluate Markov control eta and rho at the current state X_t
@@ -127,7 +127,18 @@ class Problem_Solver:
 
         return t, X, integral
     
-    def monte_carlo_value(self, x_initial, x_grid, eta, rho, epsilon = 1e-3, delta = 1e-6, M = 500, max_simulations = 5000, if_plot = False):
+    def monte_carlo_value(self, 
+                          x_initial, 
+                          x_grid, 
+                          eta, 
+                          rho, 
+                          epsilon = 1e-3, 
+                          delta = 1e-6, 
+                          M = 500, 
+                          max_simulations = 5000, 
+                          if_plot = False, 
+                          if_stopping = False
+                          ):
         """
         Estimate the value function using Monte Carlo simulation with confidence interval and stability-based stopping rules.
 
@@ -161,31 +172,36 @@ class Problem_Solver:
             # Store the cumulative reward for standard deviation calculation
             cumulative_rewards.append(cumulative_reward)
 
-            # Criteria 1: Compute the standard deviation and confidence interval width
-            if sim > 1:
-                std = np.std(cumulative_rewards, ddof=1)  # Sample standard deviation
-                confidence_interval_width = 1.96 * std / np.sqrt(sim)
-                confidence_widths.append(confidence_interval_width)
+            if if_stopping:
+                # Criteria 1: Compute the standard deviation and confidence interval width
+                if sim > 1:
+                    std = np.std(cumulative_rewards, ddof=1)  # Sample standard deviation
+                    confidence_interval_width = 1.96 * std / np.sqrt(sim)
+                    confidence_widths.append(confidence_interval_width)
 
-                # Check the confidence interval stopping rule
-                if confidence_interval_width < epsilon:
-                    print(f"Converged after {sim} simulations (confidence interval).")
+                    # Check the confidence interval stopping rule
+                    if confidence_interval_width < epsilon:
+                        print(f"Converged after {sim} simulations (confidence interval).")
+                        break
+
+                # Store the current estimate for plotting
+                convergence.append(estimated_value)
+
+                # Criteria 2: Check the stability-based stopping rule
+                if sim > M:
+                    recent_average = np.mean(convergence[-M:])  # Average of the last M estimates
+                    if abs(estimated_value - recent_average) < delta:
+                        print(f"Converged after {sim} simulations (stability-based stopping).")
+                        break
+
+                # Prevent infinite loops by limiting the number of simulations
+                if sim >= max_simulations:
+                    print(f"Reached maximum simulations ({max_simulations}) without full convergence.")
                     break
-
-            # Store the current estimate for plotting
-            convergence.append(estimated_value)
-
-            # Criteria 2: Check the stability-based stopping rule
-            if sim > M:
-                recent_average = np.mean(convergence[-M:])  # Average of the last M estimates
-                if abs(estimated_value - recent_average) < delta:
-                    print(f"Converged after {sim} simulations (stability-based stopping).")
+            else:
+                if sim >= max_simulations:
+                    print(f"Simulated with maximum ({max_simulations}).")
                     break
-
-            # Prevent infinite loops by limiting the number of simulations
-            if sim >= max_simulations:
-                print(f"Reached maximum simulations ({max_simulations}) without full convergence.")
-                break
 
         if if_plot:
             # Create a single figure with two subplots
@@ -295,7 +311,7 @@ class Problem_Solver:
         # Compute the normalized L2 norm
         return np.linalg.norm(y1_interp - y2_interp) / np.sqrt(len(self.x_grid))
 
-    def policy_improve(self, eta_guess, rho_guess, if_plot=False): 
+    def policy_improve(self, eta_guess, rho_guess, if_plot = False, if_compare = True): 
         """
         Policy improvement step for the Bellman equation.
 
@@ -305,10 +321,13 @@ class Problem_Solver:
         - if_plot: Whether to plot the results.
         """
         # Initial guess for the value function
-        v0 = self.monte_carlo_value(self.x_min, self.x_grid, eta_guess, rho_guess, if_plot=False)
-        v1 = self.monte_carlo_value(self.x_max, self.x_grid, eta_guess, rho_guess, if_plot=False)
+        v0 = self.monte_carlo_value(self.x_min, self.x_grid, eta_guess, rho_guess, if_plot=False, if_stopping=True)
+        v1 = self.monte_carlo_value(self.x_max, self.x_grid, eta_guess, rho_guess, if_plot=False, if_stopping=True)
 
         x, v_int = self.Bellman_solver(self.x_grid, v0, v1, eta_guess, rho_guess, if_plot=False)
+        if if_compare:
+            x_begin = x.copy()
+            v_begin = v_int.copy()
         iter = 0
         error = []
 
@@ -321,8 +340,8 @@ class Problem_Solver:
             eta_new = np.clip(1 - (self.alpha + self.beta * x) * (1 - x) * D_x_v / (2 * x * self.a_2), 0, 1)
             rho_new = np.maximum(0, D_x_v / (2 * self.a_3))
 
-            v0_new = self.monte_carlo_value(self.x_min, x, eta_new, rho_new, if_plot=False)
-            v1_new = self.monte_carlo_value(self.x_max, x, eta_new, rho_new, if_plot=False)
+            v0_new = self.monte_carlo_value(self.x_min, x, eta_new, rho_new, if_plot=False, if_stopping=True)
+            v1_new = self.monte_carlo_value(self.x_max, x, eta_new, rho_new, if_plot=False, if_stopping=True)
 
             x, v_update = self.Bellman_solver(x, v0_new, v1_new, eta_new, rho_new, if_plot=False)
 
@@ -337,40 +356,56 @@ class Problem_Solver:
                 print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
                 break
 
-            error.append(np.log(self.L2_norm(x_previous, x, v_int, v_update)))
+            error.append(self.L2_norm(x_previous, x, v_int, v_update))
             iter += 1
             v_int = v_update
 
-            print(f"------------------The {iter}th iteration done: log normalized L2 norm = {error[-1]}-------------------")
+            print(f"------------------The {iter}th iteration done: The normalized L2 norm = {error[-1]}-------------------")
 
         if if_plot:
-            # Create a figure with subplots
-            fig, axes = plt.subplots(3, 1, figsize=(10, 18))
+            # Plot the error in a separate figure
+            plt.figure(figsize=(10, 6))
+            plt.plot(range(len(error)), error, label="Error", color='blue', marker='o')
+            plt.xlabel("Iteration")
+            plt.ylabel("Error")
+            plt.title("Error Convergence", fontsize=14)
+            plt.grid()
+            plt.legend()
+            plt.tight_layout()
+            plt.show()
 
-            # Plot the error over iterations
-            axes[0].plot(range(len(error)), error, label="Error", color='blue', marker='o')
-            axes[0].set_xlabel("Iteration")
-            axes[0].set_ylabel("ln(Error)")
-            axes[0].set_title("Error Convergence", fontsize = 12)  # Decreased font size
-            axes[0].grid()
-            axes[0].legend()
+            # Plot the value function in a separate figure
+            if if_compare:
+                plt.figure(figsize=(10, 6))
+                plt.plot(x_begin, v_begin, label="Initial Value Function", color='orange', linestyle='--')
+                plt.plot(x, v_update, label="Final Value Function", color='purple')
+                plt.xlabel("State (x)")
+                plt.ylabel("Value (v)")
+                plt.title("Comparison of Initial and Final Value Functions", fontsize=14)
+                plt.legend()
+                plt.tight_layout()
+                plt.show()
 
-            # Plot the value function
-            axes[1].plot(x, v_update, label="Value Function", color='purple')
-            axes[1].set_xlabel("State (x)")
-            axes[1].set_ylabel("Value (v)")
-            axes[1].set_title("Solution to Bellman ODE", fontsize = 12)  # Decreased font size
-            axes[1].legend()
+            plt.figure(figsize=(10, 6))
+            plt.plot(x, v_update, label="Value Function", color='purple')
+            plt.xlabel("State (x)")
+            plt.ylabel("Value (v)")
+            plt.title("Solution to Bellman ODE", fontsize=14) 
+            plt.legend()
+            plt.tight_layout()
+            plt.show()
 
-            # Plot the controls η and ρ
-            axes[2].plot(x_previous, eta_new, label="Control η", color='green')
-            axes[2].plot(x_previous, rho_new, label="Control ρ", color='red')
-            axes[2].set_xlabel("State (x)")
-            axes[2].set_ylabel("Control")
-            axes[2].set_title("Controls η and ρ over State", fontsize = 12)  # Decreased font size
-            axes[2].legend()
-
-            # Adjust layout and show the figure
+            # Plot the controls η and ρ in another separate figure
+            plt.figure(figsize=(10, 6))
+            x_small = np.linspace(self.x_min, self.x_max, 500)
+            eta_plotting = interp1d(x_previous, eta_new, kind='cubic', fill_value='extrapolate')(x_small)
+            rho_plotting = interp1d(x_previous, rho_new, kind='cubic', fill_value='extrapolate')(x_small)
+            plt.plot(x_small, eta_plotting, label="Control η", color='blue')
+            plt.plot(x_small, rho_plotting, label="Control ρ", color='red')
+            plt.xlabel("State (x)")
+            plt.ylabel("Control")
+            plt.title("Controls η and ρ over State", fontsize=14)  
+            plt.legend()
             plt.tight_layout()
             plt.show()
 
