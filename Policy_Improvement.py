@@ -381,7 +381,7 @@ class Problem_Solver:
 
         return eta_new, rho_new, v_update, x_previous, x_update
     
-    def sensitivity_analysis(self, x, x_upd, eta, rho, v, baseline_eta = 0.5, baseline_rho = 1, if_plot=False):
+    def sensitivity_analysis(self, x, x_upd, eta, rho, v, baseline_eta = 0.5, baseline_rho = 1, if_plot=True):
         """
         Perform sensitivity analysis on the value function with respect to the controls η and ρ.
 
@@ -443,6 +443,120 @@ class Problem_Solver:
 
         return sensitivity_results
 
+    def sensitivity_steps(self, x, x_upd, eta, rho, v, if_plot=True): 
+        """
+        Perform stepwise sensitivity analysis on the value function with respect to the controls η and ρ.
+
+        Parameters:
+        - x: Original x grid.
+        - x_upd: Updated x grid.
+        - eta: Control η.
+        - rho: Control ρ.
+        - v: Baseline value function.
+        - if_plot: Whether to plot the results.
+
+        Returns:
+        - sensitivity_results: A dictionary containing the value functions for each stepwise perturbation.
+        """
+        # Define stepwise perturbations for η and ρ
+        eta_steps = [0.25, 0.5, 0.75]
+        rho_steps = [0.5, 1, 2]
+
+        sensitivity_results = {}
+
+        # Stepwise perturbation for η (plus and down)
+        for step in eta_steps:
+            perturbed_eta_plus = np.clip(eta + step, 0, 1)
+            v0 = self.monte_carlo_value(self.x_min, x, perturbed_eta_plus, rho)
+            v1 = self.monte_carlo_value(self.x_max, x, perturbed_eta_plus, rho)
+            x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, perturbed_eta_plus, rho)
+            key = f"eta_plus_{step}"
+            sensitivity_results[key] = (x_sensitive, value)
+
+            perturbed_eta_down = np.clip(eta - step, 0, 1)
+            v0 = self.monte_carlo_value(self.x_min, x, perturbed_eta_down, rho)
+            v1 = self.monte_carlo_value(self.x_max, x, perturbed_eta_down, rho)
+            x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, perturbed_eta_down, rho)
+            key = f"eta_down_{step}"
+            sensitivity_results[key] = (x_sensitive, value)
+
+        # Stepwise perturbation for ρ (plus and down)
+        for step in rho_steps:
+            perturbed_rho_plus = np.maximum(0, rho + step)
+            v0 = self.monte_carlo_value(self.x_min, x, eta, perturbed_rho_plus)
+            v1 = self.monte_carlo_value(self.x_max, x, eta, perturbed_rho_plus)
+            x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, eta, perturbed_rho_plus)
+            key = f"rho_plus_{step}"
+            sensitivity_results[key] = (x_sensitive, value)
+
+            perturbed_rho_down = np.maximum(0, rho - step)
+            v0 = self.monte_carlo_value(self.x_min, x, eta, perturbed_rho_down)
+            v1 = self.monte_carlo_value(self.x_max, x, eta, perturbed_rho_down)
+            x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, eta, perturbed_rho_down)
+            key = f"rho_down_{step}"
+            sensitivity_results[key] = (x_sensitive, value)
+
+        # Plot eta_plus results in one figure
+        if if_plot:
+            # η plus
+            plt.figure(figsize=(10, 6))
+            plt.plot(x_upd, v, label="Baseline", color='black')
+            for step in eta_steps:
+                x_eta_plus, v_eta_plus = sensitivity_results[f"eta_plus_{step}"]
+                plt.plot(x_eta_plus, v_eta_plus, label=f"η + {step}", linestyle='--')
+            plt.xlabel("State (x)")
+            plt.ylabel("Value Function")
+            plt.title("Stepwise Sensitivity: η Increase")
+            plt.legend()
+            plt.grid()
+            plt.tight_layout()
+            plt.show()
+
+            # η down
+            plt.figure(figsize=(10, 6))
+            plt.plot(x_upd, v, label="Baseline", color='black')
+            for step in eta_steps:
+                x_eta_down, v_eta_down = sensitivity_results[f"eta_down_{step}"]
+                plt.plot(x_eta_down, v_eta_down, label=f"η - {step}", linestyle=':')
+            plt.xlabel("State (x)")
+            plt.ylabel("Value Function")
+            plt.title("Stepwise Sensitivity: η Decrease")
+            plt.legend()
+            plt.grid()
+            plt.tight_layout()
+            plt.show()
+
+            # ρ plus
+            plt.figure(figsize=(10, 6))
+            plt.plot(x_upd, v, label="Baseline", color='black')
+            for step in rho_steps:
+                x_rho_plus, v_rho_plus = sensitivity_results[f"rho_plus_{step}"]
+                plt.plot(x_rho_plus, v_rho_plus, label=f"ρ + {step}", linestyle='--')
+            plt.xlabel("State (x)")
+            plt.ylabel("Value Function")
+            plt.title("Stepwise Sensitivity: ρ Increase")
+            plt.legend()
+            plt.grid()
+            plt.tight_layout()
+            plt.show()
+
+            # ρ down
+            plt.figure(figsize=(10, 6))
+            plt.plot(x_upd, v, label="Baseline", color='black')
+            for step in rho_steps:
+                x_rho_down, v_rho_down = sensitivity_results[f"rho_down_{step}"]
+                plt.plot(x_rho_down, v_rho_down, label=f"ρ - {step}", linestyle=':')
+            plt.xlabel("State (x)")
+            plt.ylabel("Value Function")
+            plt.title("Stepwise Sensitivity: ρ Decrease")
+            plt.legend()
+            plt.grid()
+            plt.tight_layout()
+            plt.show()
+
+        return sensitivity_results
+
+
 def main():
     """
     Main function to demonstrate the usage of the Problem_Solver class.
@@ -455,8 +569,8 @@ def main():
     rho = np.zeros(solver.n)  # Initial guess of constant control ρ
 
     # Run the policy improvement algorithm
-    eta_opt, rho_opt, v_opt, x_pre, x_upd = solver.policy_improve(eta, rho, if_plot = True, if_compare = True)
-    solver.sensitivity_analysis(x_pre, x_upd, eta_opt, rho_opt, v_opt, if_plot = True)
+    eta_opt, rho_opt, v_opt, x_pre, x_upd = solver.policy_improve(eta, rho, if_plot = False, if_compare = False)
+    solver.sensitivity_steps(x_pre, x_upd, eta_opt, rho_opt, v_opt)
 
 # Run the main function if the script is executed directly
 if __name__ == "__main__":
