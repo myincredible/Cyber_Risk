@@ -12,7 +12,7 @@ class Problem_Solver:
                  dt = 0.01, 
                  tol = 1e-6, 
                  alpha = 0.35, 
-                 beta = 0.15, 
+                 beta = 0.5, 
                  gamma = 0.15, 
                  tilde_sigma = 0.3, 
                  delta = 0.05, 
@@ -50,9 +50,9 @@ class Problem_Solver:
 
     def b_func(self, x, eta, rho):
         """
-        Drift function b(x, eta, rho) = η * α * (1 - x) + x * (η * β * (1 - x) - (γ + ρ)).
+        Drift function b(x, eta, rho) = η * α * (1 - x) + x * (η^2 * β * (1 - x) - (γ + ρ)).
         """
-        return eta * self.alpha * (1 - x) + x * (eta * self.beta * (1 - x) - (self.gamma + rho))
+        return eta * self.alpha * (1 - x) + x * (eta ** 2 * self.beta * (1 - x) - (self.gamma + rho))
 
     def sigma_func(self, x):
         """
@@ -304,7 +304,9 @@ class Problem_Solver:
         while True:
             x_previous = x.copy()
 
-            eta_new = np.clip(1 - (self.alpha + self.beta * x) * (1 - x) * p_int / (2 * x * self.a_2), 0, 1)
+            eta_new = np.clip(
+                (2 * x * self.a_2 - self.alpha * (1 - x) * p_int) / (2 * x * self.a_2 + 2 * self.beta * x * (1 - x) * p_int), 
+                0, 1)
             rho_new = np.maximum(0, p_int / (2 * self.a_3))
 
             v0_new = self.monte_carlo_value(self.x_min, x, eta_new, rho_new)
@@ -569,8 +571,15 @@ def main():
     rho = np.zeros(solver.n)  # Initial guess of constant control ρ
 
     # Run the policy improvement algorithm
-    eta_opt, rho_opt, v_opt, x_pre, x_upd = solver.policy_improve(eta, rho, if_plot = False, if_compare = False)
-    solver.sensitivity_steps(x_pre, x_upd, eta_opt, rho_opt, v_opt)
+    eta_opt, rho_opt, v_opt, x_pre, x_upd = solver.policy_improve(eta, rho, if_plot = True, if_compare = True)
+    # solver.sensitivity_steps(x_pre, x_upd, eta_opt, rho_opt, v_opt)
+    # print(solver.objective_func(
+    #     x_initial=0.1, 
+    #     x_grid=solver.x_grid, 
+    #     eta=eta, 
+    #     rho=rho, 
+    #     if_plot=True
+    # )[2])
 
 # Run the main function if the script is executed directly
 if __name__ == "__main__":
