@@ -2,6 +2,8 @@ import numpy as np
 from scipy.integrate import solve_bvp
 from scipy.interpolate import interp1d
 from scipy.integrate import simpson
+from scipy.optimize import root_scalar
+from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
@@ -11,18 +13,19 @@ class Problem_Solver:
                  n = 1000, 
                  dt = 0.01, 
                  tol = 1e-6, 
-                 alpha = 0.35, 
+                 alpha = 0.5, 
                  beta = 0.5, 
                  gamma = 0.15, 
                  tilde_sigma = 0.3, 
                  delta = 0.05, 
                  a_0 = 0.5, 
-                 a_1 = 1, 
-                 a_2 = 5, 
-                 a_3 = 2.5, 
-                 x_min = 0.1, 
-                 x_max = 0.9
-                 ):
+                 a_1 = 2.5, # a_I
+                 a_2 = 0.5, # a^I_m - a^S_m
+                 a_3 = 1.5, # a_r
+                 a_4 = 2, # a^S_m
+                 x_min = 0.01, 
+                 x_max = 0.99
+                 ): 
         
         # Parameters
         self.n = n
@@ -42,6 +45,7 @@ class Problem_Solver:
         self.a_1 = a_1
         self.a_2 = a_2
         self.a_3 = a_3
+        self.a_4 = a_4
 
         # Truncated boundaries of controlled SDE
         self.x_min = x_min
@@ -64,131 +68,97 @@ class Problem_Solver:
         """
         Reward function f(x, η, ρ) = a_0 + a_1 * x + a_2 * x * (1 - η)^2 + a_3 * x * ρ^2.
         """
-        return self.a_0 + self.a_1 * x + self.a_2 * x * (1 - eta)**2 + self.a_3 * x * rho**2
+        return self.a_0 + self.a_1 * x + (self.a_2 * x + self.a_4) * (1 - eta)**2 + self.a_3 * x * rho**2
 
-    def objective_func(self, x_initial, x_grid, eta, rho, if_plot=False): 
+    def objective_func(
+        self,
+        x_initial,
+        x_grid,
+        eta,
+        rho,
+        num_simulations = 2000, 
+        T_stopped = 75, 
+        if_plot = False
+    ):
         """
-        Simulate the stochastic process and compute the integral of the discounted reward function.
-
-        Parameters:
-        - x_initial: Initial state.
-        - eta: Control η (array of size self.n).
-        - rho: Control ρ (scalar or array of size self.n).
-        - if_plot: Whether to plot the path of X_t.
-
-        Returns:
-        - t: Time points.
-        - X: Simulated state path.
-        - integral: Integral of the discounted reward function.
+        Vectorized version:
+        - X_t can go beyond [x_min, x_max].
+        - Controls η and ρ are evaluated using boundary values when X_t is out of bounds.
         """
-        # Interpolate eta as a function of x
-        eta_func = lambda x_eval: np.interp(x_eval, x_grid, eta)
-        rho_func = lambda x_eval: np.interp(x_eval, x_grid, rho)
 
-        t = [0]
-        X = [x_initial]
-        integral = 0.0
+        T = int(T_stopped / self.dt) + 1
+        t = np.linspace(0, T_stopped, T)
 
-        T_stopped = 75
+        X = np.zeros((num_simulations, T))
+        X[:, 0] = x_initial
 
-        # Simulate the whole sample path of process X
-        while t[-1] < T_stopped: 
-            # Evaluate Markov control eta and rho at the current state X_t
-            eta_t = eta_func(X[-1])
-            rho_t = rho_func(X[-1])  
+        # Controls will clip X internally when evaluated:
+        def eta_func(x_eval):
+            x_clipped = np.clip(x_eval, self.x_min, self.x_max)
+            return np.interp(x_clipped, x_grid, eta)
 
-            # Compute drift and diffusion
-            b = self.b_func(X[-1], eta_t, rho_t)
-            sigma = self.sigma_func(X[-1])
+        def rho_func(x_eval):
+            x_clipped = np.clip(x_eval, self.x_min, self.x_max)
+            return np.interp(x_clipped, x_grid, rho)
 
-            # Simulate the next state using Euler-Maruyama
-            dW = np.sqrt(self.dt) * np.random.randn()
-            X_next = X[-1] + b * self.dt + sigma * dW
-            t_next = t[-1] + self.dt
+        dW = np.sqrt(self.dt) * np.random.randn(num_simulations, T - 1)
 
-            # Append the new state and time
-            t.append(t_next)
-            X.append(X_next)
+        for k in range(1, T):
+            X_prev = X[:, k - 1]
 
-        # Compute the reward and its discounted value
-        f_X = self.f_func(np.array(X), eta_func(X), rho_func(X))
-        discounted_f_X = np.exp(-self.delta * np.array(t)) * f_X
-        # Compute the integral using the Simpson rule
-        integral = simpson(discounted_f_X, t)
+            eta_t = eta_func(X_prev)  # control evaluated at clipped X
+            rho_t = rho_func(X_prev)
+
+            b = self.b_func(X_prev, eta_t, rho_t)
+            sigma = self.sigma_func(X_prev)
+
+            X[:, k] = X_prev + b * self.dt + sigma * dW[:, k - 1]
+
+        f_X = self.f_func(X, eta_func(X), rho_func(X))
+        discount = np.exp(-self.delta * t)
+        discounted_f_X = f_X * discount
+
+        integral = simpson(discounted_f_X, t, axis=1)
 
         if if_plot:
             plt.figure(figsize=(10, 6))
-            plt.plot(t, X, label="Path of X_t")
+            for i in range(min(20, num_simulations)):
+                plt.plot(t, X[i], alpha=0.6)
             plt.xlabel("Time (t)")
             plt.ylabel("State (X_t)")
-            plt.title("Path of X_t over Time")
-            plt.legend()
-            plt.grid()
+            plt.title(f"Sample Paths (Up to 20 of {num_simulations})")
+            plt.grid(True)
             plt.show()
 
         return t, X, integral
-    
-    def monte_carlo_value(self, 
-                          x_initial, 
-                          x_grid, 
-                          eta, 
-                          rho, 
-                          max_simulations = 2000, 
-                          if_plot = False, 
-                          ):
-        """
-        Estimate the value function using Monte Carlo simulation with confidence interval and stability-based stopping rules.
 
-        Parameters:
-        - x_initial: Initial state.
-        - eta: Control η.
-        - rho: Control ρ.
-        - epsilon: Desired tolerance for the confidence interval.
-        - delta: Stability threshold for the value function.
-        - M: Window size for stability-based stopping rule.
-        - max_simulations: Maximum number of simulations to prevent infinite loops.
-        - if_plot: Whether to plot the convergence of the estimated value and confidence interval width.
+    
+    def monte_carlo_value(
+        self,
+        x_initial,
+        x_grid,
+        eta,
+        rho,
+        num_simulations = 2000,
+        if_plot = False
+    ):
+        """
+        Compute mean value function from vectorized simulations.
 
         Returns:
-        - Estimated value function.
+        - estimated_value: scalar mean of all path integrals.
         """
-        estimated_value = 0.0  # Initialize the value estimate
-        cumulative_rewards = []  # Store cumulative rewards for standard deviation calculation
-        sim = 0  # Simulation counter
-        convergence = []  # Store the estimated value at each step for plotting
+        _, _, cumulative_rewards = self.objective_func(
+            x_initial=x_initial,
+            x_grid=x_grid,
+            eta=eta,
+            rho=rho,
+            num_simulations=num_simulations,
+            if_plot=if_plot
+        )
 
-        with tqdm(total=max_simulations, desc="Monte Carlo Simulation", unit="sim") as pbar:
-            while True:
-                sim += 1
-                # Use the existing objective_func to simulate the path and compute the reward
-                _, _, cumulative_reward = self.objective_func(x_initial, x_grid, eta, rho)
-
-                # Store the cumulative reward for standard deviation calculation
-                cumulative_rewards.append(cumulative_reward)
-
-                if sim >= max_simulations:
-                    print(f"Simulated with maximum ({max_simulations}).")
-                    break
-                
-                pbar.update(1)
-
-        estimated_value = np.mean(cumulative_rewards)  # Estimate the value function as the mean of cumulative rewards
-        print(f"Estimated value function: {estimated_value}")
-
-        if if_plot:
-            # Plot the convergence of the estimated value
-            plt.subplots(2, 1, figsize=(10, 12))
-            plt.plot(range(1, len(convergence) + 1), convergence, label="Estimated Value")
-            plt.axhline(estimated_value, color='r', linestyle='--', label=f"Converged Value: {estimated_value:.4f}")
-            plt.set_xlabel("Number of Simulations")
-            plt.set_ylabel("Estimated Value")
-            plt.set_title("Convergence of Monte Carlo Simulation")
-            plt.legend()
-            plt.grid()
-
-            # Adjust layout and show the figure
-            plt.tight_layout()
-            plt.show()
+        estimated_value = np.mean(cumulative_rewards)
+        print(f"Estimated value function: {estimated_value:.4f}")
 
         return estimated_value
 
@@ -224,40 +194,39 @@ class Problem_Solver:
             return np.array([dv_dx, dp_dx])
 
         def boundary_conditions(Va, Vb):
-            return [Va[0] - v0, Vb[0] - v1]
+            return [Va[0] - v0, Vb[1] - v1]
 
         x = x_grid
 
         # Initial guess for the value function and its derivative
-        v_guess = v0 + (v1 - v0) * (x - x.min()) **2 / (x.max() - x.min()) **2 # Linear
-        p_guess = np.gradient(v_guess, x)
+        v_guess = x **2  # Linear
+        p_guess = 2 * x  # Constant derivative
 
         V_guess = np.vstack([v_guess, p_guess])
 
-        solution = solve_bvp(bellman_rhs, boundary_conditions, x, V_guess, max_nodes=int(1e6), tol=1e-5)
+        solution = solve_bvp(bellman_rhs, boundary_conditions, x, V_guess, max_nodes=int(1e6), tol=1e-4)
 
         if solution.success:
             print("Solver converged successfully.")
         else:
             print("Solver failed to converge.")
 
-        x_sol = solution.x
-        v_sol = solution.y[0]  # Value function
-        p_sol = solution.y[1]  # Derivative of the value function
+        # x_sol = solution.x
+        v_sol, p_sol = solution.sol(x)  # Value function
 
         if if_plot:
             plt.figure(figsize=(10, 8))
-            plt.plot(x_sol, v_sol, label="Value Function")
-            # plt.plot(x_sol, p_sol, label="Derivative of Value Function (dv/dx)", linestyle='--')
+            plt.plot(x, v_sol, label="Value Function")
+            # plt.plot(x, p_sol, label="Derivative of Value Function (dv/dx)", linestyle='--')
             plt.xlabel("State (x)")
             plt.ylabel("Value / Derivative")
-            plt.title("Solution to Bellman ODE and its Derivative")
+            plt.title("Solution to Bellman ODE")
             plt.legend()
             plt.grid()
             plt.show()
 
-        return x_sol, v_sol, p_sol
-    
+        return x, v_sol, p_sol
+
     def L2_norm(self, x1, x2, y1, y2): 
         """
         Compute the L2 norm of the difference between two arrays of different length by interpolating.
@@ -292,7 +261,9 @@ class Problem_Solver:
         """
         # Initial guess for the value function
         v0 = self.monte_carlo_value(self.x_min, self.x_grid, eta_guess, rho_guess)
-        v1 = self.monte_carlo_value(self.x_max, self.x_grid, eta_guess, rho_guess)
+        # v1 = self.monte_carlo_value(self.x_max, self.x_grid, eta_guess, rho_guess)
+        # v0 = 0
+        v1 = 0
 
         x, v_int, p_int = self.Bellman_solver(self.x_grid, v0, v1, eta_guess, rho_guess, if_plot=False)
         if if_compare:
@@ -302,30 +273,32 @@ class Problem_Solver:
         error = []
 
         while True:
-            x_previous = x.copy()
-
             eta_new = np.clip(
-                (2 * x * self.a_2 - self.alpha * (1 - x) * p_int) / (2 * x * self.a_2 + 2 * self.beta * x * (1 - x) * p_int), 
+                1 - ((self.alpha * (1 - x) + self.beta * x * (1 - x)) * p_int) / (2 * (self.a_2 * x + self.a_4)), 
                 0, 1)
-            rho_new = np.maximum(0, p_int / (2 * self.a_3))
+            rho_new = np.clip(p_int / (2 * self.a_3), 0, 10)
+            # eta_new = eta_guess.copy()
+            # rho_new = rho_guess
 
             v0_new = self.monte_carlo_value(self.x_min, x, eta_new, rho_new)
-            v1_new = self.monte_carlo_value(self.x_max, x, eta_new, rho_new)
+            # v1_new = self.monte_carlo_value(self.x_max, x, eta_new, rho_new)
+            # v0_new = 0
+            v1_new = 0
 
             x, v_update, p_update = self.Bellman_solver(x, v0_new, v1_new, eta_new, rho_new, if_plot=False)
 
-            if self.L2_norm(x_previous, x, v_int, v_update) <= self.tol_main:
+            if self.L2_norm(x, x, v_int, v_update) <= self.tol_main:
                 print(f"Updated value function: {v_update}")
                 print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
                 break
 
-            if iter >= 5:
+            if iter >= 10: 
                 print(f"Maximum iterations {iter} reached.")
                 print(f"Updated value function: {v_update}")
                 print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
                 break
 
-            error.append(self.L2_norm(x_previous, x, v_int, v_update))
+            error.append(self.L2_norm(x, x, v_int, v_update))
             iter += 1
             v_int = v_update
             p_int = p_update
@@ -368,8 +341,8 @@ class Problem_Solver:
             # Plot the controls η and ρ in another separate figure
             plt.figure(figsize=(10, 6))
             x_small = np.linspace(self.x_min, self.x_max, 500)
-            eta_plotting = interp1d(x_previous, eta_new, kind='cubic', fill_value='extrapolate')(x_small)
-            rho_plotting = interp1d(x_previous, rho_new, kind='cubic', fill_value='extrapolate')(x_small)
+            eta_plotting = interp1d(x, eta_new, kind='cubic', fill_value='extrapolate')(x_small)
+            rho_plotting = interp1d(x, rho_new, kind='cubic', fill_value='extrapolate')(x_small)
             plt.plot(x_small, eta_plotting, label="Control η", color='blue')
             plt.plot(x_small, rho_plotting, label="Control ρ", color='red')
             plt.xlabel("State (x)")
@@ -379,9 +352,9 @@ class Problem_Solver:
             plt.tight_layout()
             plt.show()
 
-        x_update = x.copy()
+        # x_update = x.copy()
 
-        return eta_new, rho_new, v_update, x_previous, x_update
+        return eta_new, rho_new, v_update
     
     def sensitivity_analysis(self, x, x_upd, eta, rho, v, baseline_eta = 0.5, baseline_rho = 1, if_plot=True):
         """
@@ -558,28 +531,89 @@ class Problem_Solver:
 
         return sensitivity_results
 
+    def compare_a_groups(self, a_groups, eta_init=None, rho_init=None):
+        """
+        Compare value functions and controls for different (a_1, a_2, a_3) groups and plot them.
+
+        Parameters:
+        - a_groups: List of tuples [(a_1, a_2, a_3), ...]
+        - eta_init: Optional initial eta array (default: zeros)
+        - rho_init: Optional initial rho array (default: zeros)
+        """
+        if eta_init is None:
+            eta_init = np.zeros(self.n)
+        if rho_init is None:
+            rho_init = np.zeros(self.n)
+
+        legends = []
+        v_list = []
+        eta_list = []
+        rho_list = []
+
+        for a2 in a_groups:
+            # Set coefficients
+            self.a_2 = a2
+
+            # Solve for optimal policy and value function
+            eta_opt, rho_opt, v_opt = self.policy_improve(eta_init, rho_init, if_plot=False, if_compare=False)
+            v_list.append(v_opt)
+            eta_list.append(eta_opt)
+            rho_list.append(rho_opt)
+            legends.append(f"a2={a2}")
+
+        x = self.x_grid
+
+        fig, axs = plt.subplots(3, 1, figsize=(10, 15), sharex=True)
+
+        # Plot value functions
+        for v, label in zip(v_list, legends):
+            axs[0].plot(x, v, lw=2, label=label)
+        axs[0].set_ylabel("Value Function")
+        axs[0].set_title("Value Function for Different Groups")
+        axs[0].legend()
+
+        # Plot eta controls
+        for eta, label in zip(eta_list, legends):
+            axs[1].plot(x, eta, lw=2, label=label)
+        axs[1].set_ylabel("Control η")
+        axs[1].set_title("Optimal η for Different Groups")
+        axs[1].legend()
+
+        # Plot rho controls
+        for rho, label in zip(rho_list, legends):
+            axs[2].plot(x, rho, lw=2, label=label)
+        axs[2].set_xlabel("State (x)")
+        axs[2].set_ylabel("Control ρ")
+        axs[2].set_title("Optimal ρ for Different Groups")
+        axs[2].legend()
+
+        plt.tight_layout()
+        plt.show()
 
 def main():
-    """
-    Main function to demonstrate the usage of the Problem_Solver class.
-    """
-    # Create an instance of the Problem_Solver
     solver = Problem_Solver()
+    # Define groups of (a1, a2, a3) to compare
+    a_groups = [
+        1, 
+        2.5, 
+        5, 
+        10
+    ]
+    # solver.compare_a_groups(a_groups)
+    eta_init = 0 * np.ones(solver.n)
+    rho_init = 0 * np.ones(solver.n)
+    solver.policy_improve(eta_init, rho_init, if_plot=True, if_compare=False)
+    # solver.objective_func(0.05, solver.x_grid, eta_init, rho_init, if_plot=True)
+    # solver.monte_carlo_value(
+    # x_initial = 0.1,
+    # x_grid = solver.x_grid,
+    # eta = eta_init,
+    # rho = rho_init,
+    # num_simulations = 10000, 
+    # if_plot = True
+    # )
 
-    # Define initial state and controls
-    eta = 0 * np.ones(solver.n)  # Initial guess of constant control η
-    rho = np.zeros(solver.n)  # Initial guess of constant control ρ
 
-    # Run the policy improvement algorithm
-    eta_opt, rho_opt, v_opt, x_pre, x_upd = solver.policy_improve(eta, rho, if_plot = True, if_compare = True)
-    # solver.sensitivity_steps(x_pre, x_upd, eta_opt, rho_opt, v_opt)
-    # print(solver.objective_func(
-    #     x_initial=0.1, 
-    #     x_grid=solver.x_grid, 
-    #     eta=eta, 
-    #     rho=rho, 
-    #     if_plot=True
-    # )[2])
 
 # Run the main function if the script is executed directly
 if __name__ == "__main__":
