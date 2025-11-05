@@ -16,10 +16,10 @@ class Problem_Solver:
                  gamma = 0.15, 
                  tilde_sigma = 0.3, 
                  delta = 0.05, 
-                 a_0 = 0, 
+                 a_0 = 0.5, 
                  a_1 = 5, # a_I
                  a_2 = 2    , # a^I_m - a^S_m
-                 a_3 = 0.5, # a_r
+                 a_3 = 5, # a_r
                  a_4 = 0.5, # a^S_m
                  x_min = 0.01, 
                  x_max = 0.99
@@ -74,7 +74,7 @@ class Problem_Solver:
         x_grid,
         eta,
         rho,
-        num_simulations = 2000, 
+        num_simulations = 10000, 
         T_stopped = 75, 
         if_plot = False
     ):
@@ -290,7 +290,7 @@ class Problem_Solver:
                 print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
                 break
 
-            if iter >= 5: 
+            if iter >= 10: 
                 print(f"Maximum iterations {iter} reached.")
                 print(f"Updated value function: {v_update}")
                 print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
@@ -582,55 +582,54 @@ class Problem_Solver:
 
 def main():
     solver = Problem_Solver()
-    # # Define groups of (a1, a2, a3) to compare
-    # a_groups = [0.1, 0.25, 0.5, 0.95]
-    
-    # solver.compare_a_groups(a_groups)
     eta = 1 * np.ones(solver.n)
-    rho = 0 * np.ones(solver.n)
-    eta, rho, v = solver.policy_improve(eta, rho, if_plot=True, if_compare=False)
-    # solver.sensitivity_steps(solver.x_grid, eta, rho, v, if_plot=True)
+    rho = 1 * np.ones(solver.n)
+    # eta, rho, v = solver.policy_improve(eta, rho, if_plot=True, if_compare=False)
 
-    # # Run Bellman_solver for a single initial point
-    # vx_01 = solver.monte_carlo_value(
-    #     x_initial = solver.x_min,
-    #     x_grid = solver.x_grid,
-    #     eta = eta,
-    #     rho = rho,
-    #     num_simulations = 2000,
-    #     if_plot = True
-    # )
+    # # Comparison of MC and Bellman value function at 10 points
+    # x_points = np.linspace(solver.x_min, solver.x_max, 10)
+    # v_mc = []
 
-    # vx_a = solver.monte_carlo_value(
-    #     x_initial = solver.x_max - 0.01,
-    #     x_grid = solver.x_grid,
-    #     eta = eta,
-    #     rho = rho,
-    #     num_simulations = 2000,
-    #     if_plot = False
-    # )
+    # for x0 in x_points:
+    #     val_mc = solver.monte_carlo_value(
+    #         x_initial=x0,
+    #         x_grid=solver.x_grid,
+    #         eta=eta,
+    #         rho=rho,
+    #         num_simulations=2000,
+    #         if_plot=False
+    #     )
+    #     v_mc.append(val_mc)
 
-    # vx_b = solver.monte_carlo_value(
-    #     x_initial = 0.5,
-    #     x_grid = solver.x_grid,
-    #     eta = eta,
-    #     rho = rho,
-    #     num_simulations = 2000,
-    #     if_plot = True
-    # )
-    
-    # p1 = (vx_b - vx_a) / 0.01 # Numerical derivative at the right boundary
+    # # Interpolate Bellman value function to x_points for printing
+    # v_bellman = np.interp(x_points, solver.x_grid, v)
 
-    # solver.Bellman_solver(
-    #     x_grid = solver.x_grid,
-    #     v0 = vx_01,
-    #     v1 = p1,
-    #     eta = eta,
-    #     rho = rho,
-    #     if_plot = True
-    # )
+    # # Print comparison
+    # print("x\tMC Value\tBellman Value")
+    # for xi, vmc, vbell in zip(x_points, v_mc, v_bellman):
+    #     print(f"{xi:.3f}\t{vmc:.4f}\t\t{vbell:.4f}")
 
-    
+    # # Plot: MC points only, Bellman value function as curve
+    # import matplotlib.pyplot as plt
+    # plt.figure(figsize=(10, 6))
+    # plt.plot(solver.x_grid, v, '-', label='Bellman Value Function')  # continuous curve
+    # plt.scatter(x_points, v_mc, color='red', label='Monte Carlo Value (points)', zorder=5)  # points only
+    # plt.xlabel("State (x)")
+    # plt.ylabel("Value Function")
+    # plt.title("Monte Carlo Points vs Bellman Value Function")
+    # plt.legend()
+    # plt.grid()
+    # plt.tight_layout()
+    # plt.show()
+    solver.monte_carlo_value(
+            x_initial=0.99,
+            x_grid=solver.x_grid,
+            eta=eta,
+            rho=rho,
+            num_simulations=2000,
+            if_plot=False
+    )
+
 # Run the main function if the script is executed directly
 if __name__ == "__main__":
     main()
