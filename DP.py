@@ -14,7 +14,7 @@ beta = [0.2, 0.8]
 gamma = [0.1, 0.2]
 sigma_tilde = [0.15, 0.35]
 q = np.array([[-1, 1], [1, -1]])
-delta = 0.05
+delta = 0.1
 
 a0, aI, aS_m, aI_m, a_r = 0.0, 1.5, 0.5, 1.5, 1.0
 
@@ -68,7 +68,7 @@ tol = 1e-6
 max_iter = 10000
 
 # Initialize value function
-V = 35 * np.ones((n_x, len(regimes)))
+V = np.zeros((n_x, len(regimes)))
 V_new = np.ones_like(V)
 
 # ---- DP iteration with explicit accumulated time ----
@@ -101,11 +101,11 @@ for it in range(max_iter):
                 total_cost = f(x, eta, rho) * Delta_t
                 total = np.exp(-delta * Delta_t) * expected_V + total_cost
                 vals.append(total)
-
+                
             V_new[xi, l] = min(vals)
 
     diff = np.max(np.abs(V_new - V))
-    if it % 100 == 0 or it == max_iter - 1:
+    if it % 50 == 0 or it == max_iter - 1:
         print(f"DP iteration {it+1}, max diff={diff:.2e}")
     V[:] = V_new
     if diff < tol:
