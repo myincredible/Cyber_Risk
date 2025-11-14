@@ -169,9 +169,9 @@ def calculate_averaged_total_cost(env, num_episodes=1000, max_steps_per_episode=
         
         while step_count < max_steps_per_episode:
             # 随机选择动作（在实际应用中，这里应该使用学习到的策略）
-            action_idx = random.randint(0, env.n_actions - 1)
+            # action_idx = random.randint(0, env.n_actions - 1)
             # 执行一步
-            next_state, reward, discount, info = env.step(action_idx)
+            next_state, reward, discount, info = env.step(14)
             
             # 累加成本（注意：reward是负的成本）
             current_discount *= discount
