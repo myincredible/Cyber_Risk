@@ -5,6 +5,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import Envir
 
+plt.style.use('grayscale')
+
 
 # =======================
 # Small Neural Networks
@@ -21,30 +23,34 @@ class ValueNet(nn.Module):
     def forward(self, x):
         return self.net(x).squeeze(-1)
 
-
 class PolicyNet(nn.Module):
-    def __init__(self, state_dim=2, hidden_dim=32):
+    def __init__(self, state_dim = 2, hidden_dim = 32, M = 10.0):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 2),
-            nn.Sigmoid()
-        )
-
-
+        self.M = M
+        
+        # Simple 2-layer network
+        self.fc1 = nn.Linear(state_dim, hidden_dim)
+        self.activation = nn.LeakyReLU(0.01)
+        self.fc2 = nn.Linear(hidden_dim, 2)
+    
     def forward(self, x):
-        actions = self.net(x)
-        return actions[:, 0], actions[:, 1]  # eta, rho
-
-
+        x = self.fc1(x)
+        x = self.activation(x)
+        outputs = self.fc2(x)
+        
+        output1 = torch.sigmoid(outputs[:, 0])
+        
+        # For ρ: direct approach
+        output2 = torch.exp(outputs[:, 1])  # (0, ∞)
+        output2 = self.M * output2 / (1 + output2)  # Soft clamp to (0, M)
+        
+        return output1, output2
+    
 # =======================
-# Fast NFVI with Policy Network
+# Deterministic AC
 # =======================
 class FastNFVI:
-    def __init__(self, env, hidden_dim=16, lr_value=1e-3, lr_policy=1e-4):  # 降低策略学习率
+    def __init__(self, env, hidden_dim=16, lr_value=1e-3, lr_policy=1e-4):  # lr_policy << lr_value
         self.env = env
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
@@ -55,8 +61,6 @@ class FastNFVI:
         self.optimizer_policy = optim.Adam(self.policy_net.parameters(), lr=lr_policy)
 
         self.loss_history = []
-        self.policy_loss_history = []
-        self.residuals_history = []
 
         self.all_states = [[x, float(r)] for x in self.env.x_states for r in self.env.regimes]
         self.states_tensor = torch.FloatTensor(self.all_states).to(self.device)
@@ -69,7 +73,7 @@ class FastNFVI:
         return int(idx)
 
     def _compute_Q_value(self, state, eta, rho):
-        """计算 Q 值"""
+        """Compute the Bellman RHS"""
         x, regime = state[0], int(state[1])
         
         trans_probs = self.env.trans_prob(x, regime, eta, rho)
@@ -90,9 +94,8 @@ class FastNFVI:
 
         return immediate_cost + torch.exp(-self.env.delta * Delta_t) * expected_next_value
 
-    def train_iteration(self, lambda_output = 1e-3):
-        """一次训练迭代 - 修正版本"""
-        # 步骤1: 策略评估 - 用当前策略计算目标值
+    def train_iteration(self):
+        # Step1: Critic step
         with torch.no_grad():
             eta_all, rho_all = self.policy_net(self.states_tensor)
             targets = []
@@ -103,48 +106,38 @@ class FastNFVI:
             
             targets_tensor = torch.FloatTensor(targets).to(self.device)
 
-        # 更新价值函数
+        # Optimize Value Network
         self.optimizer_value.zero_grad()
         predicted_values = self.value_net(self.states_tensor)
         value_loss = nn.MSELoss()(predicted_values, targets_tensor)
         value_loss.backward()
         self.optimizer_value.step()
 
-        # 步骤2: 策略改进 - 使用价值函数梯度来改进策略
+        # Step 2: Actor step
         self.optimizer_policy.zero_grad()
         
-        # 重新计算当前策略的Q值（需要梯度）
+        # Re-compute policy outputs with gradients
         eta_all, rho_all = self.policy_net(self.states_tensor)
         policy_loss = 0
         
         for i, state in enumerate(self.all_states):
 
-            # 计算 Q(s, a) 也要有梯度！！
+            # Bellman RHS with gradient tracking
             Q_current = self._compute_Q_value(state, eta_all[i], rho_all[i])
-
             policy_loss += Q_current
 
         policy_loss /= len(self.all_states)
-
-        # L2-Regularization on policy outputs
-        entropy = -(eta_all * torch.log(eta_all + 1e-8) + rho_all * torch.log(rho_all + 1e-8))
-        policy_loss += lambda_output * torch.mean(entropy)
-        
-        # final_policy_loss.backward()
+                
         policy_loss.backward()
         self.optimizer_policy.step()
 
-        # 记录结果
+        # record losses
         self.loss_history.append(value_loss.item())
-        self.policy_loss_history.append(policy_loss.item())
         
-        with torch.no_grad():
-            residual = torch.mean(torch.abs(predicted_values - targets_tensor)).item()
-
-        return value_loss.item(), policy_loss.item(), residual
+        return value_loss.item()
 
     def get_policy(self):
-        """获取最终策略"""
+        """Extract the learned policy"""
         with torch.no_grad():
             eta_all, rho_all = self.policy_net(self.states_tensor)
             policies = []
@@ -153,7 +146,7 @@ class FastNFVI:
             return policies
 
     def plot_results(self):
-        """绘制结果"""
+        """Plot function"""
         policies = self.get_policy()
         
         x_values = self.env.x_states
@@ -172,68 +165,47 @@ class FastNFVI:
                 eta_1.append(policies[i][0])
                 rho_1.append(policies[i][1])
 
-        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
 
-        # 训练损失
-        axes[0,0].plot(self.loss_history, label='Value Loss')
-        axes[0,0].plot(self.policy_loss_history, label='Policy Loss')
-        axes[0,0].set_title('Training Losses')
+        # Bellman Residual
+        axes[0,0].plot(self.loss_history)
+        axes[0,0].set_title('Value Residual')
         axes[0,0].set_yscale('log')
-        axes[0,0].legend()
-        axes[0,0].grid(True)
 
-        # Bellman残差
-        axes[0,1].plot(self.residuals_history)
-        axes[0,1].set_title('Bellman Residual')
-        axes[0,1].set_yscale('log')
-        axes[0,1].grid(True)
+        # Value Function
+        axes[0,1].plot(x_values, values_0, label='Regime 0')
+        axes[0,1].plot(x_values, values_1, label='Regime 1')
+        axes[0,1].set_title('Value Function')
+        axes[0,1].legend()
 
-        # 价值函数
-        axes[0,2].plot(x_values, values_0, label='Regime 0')
-        axes[0,2].plot(x_values, values_1, label='Regime 1')
-        axes[0,2].set_title('Value Function')
-        axes[0,2].legend()
-        axes[0,2].grid(True)
-
-        # 策略 eta
+        # Policy: eta
         axes[1,0].plot(x_values, eta_0, label='eta 0')
         axes[1,0].plot(x_values, eta_1, label='eta 1')
         axes[1,0].set_title('Policy: Eta')
         axes[1,0].legend()
-        axes[1,0].grid(True)
 
-        # 策略 rho
+        # Policy: rho
         axes[1,1].plot(x_values, rho_0, label='rho 0')
         axes[1,1].plot(x_values, rho_1, label='rho 1')
         axes[1,1].set_title('Policy: Rho')
         axes[1,1].legend()
-        axes[1,1].grid(True)
-
-        # 组合图
-        axes[1,2].plot(x_values, eta_0, '--', label='eta 0')
-        axes[1,2].plot(x_values, eta_1, '--', label='eta 1')
-        axes[1,2].plot(x_values, rho_0, ':', label='rho 0')
-        axes[1,2].plot(x_values, rho_1, ':', label='rho 1')
-        axes[1,2].set_title('Combined Policies')
-        axes[1,2].legend()
-        axes[1,2].grid(True)
 
         plt.tight_layout()
         plt.show()
 
 
 # =======================
-# Run NFVI
+# Run Deterministic Actor-Critic Algorithm
 # =======================
 if __name__ == "__main__":
     env = Envir.PandemicControlEnvironment()
-    nfvi = FastNFVI(env, hidden_dim=16, lr_policy=5e-3)  # 使用更小的策略学习率
-
+    ## lr_policy must be much smaller than lr_value!
+    nfvi = FastNFVI(env, hidden_dim=16, lr_value = 5e-3, lr_policy=5e-4)  
+    
     n_iter = 10000
     for it in range(n_iter):
-        value_loss, policy_loss, residual = nfvi.train_iteration()
+        value_loss = nfvi.train_iteration()
         if it % 50 == 0:
-            print(f"Iter {it}: ValueLoss={value_loss:.10f}, PolicyLoss={policy_loss:.8f}, "
-                  f"Residual={residual:.4f}")
+            print(f"Iter {it}: ValueLoss={value_loss:.10f}")
 
     nfvi.plot_results()

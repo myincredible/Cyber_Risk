@@ -11,7 +11,7 @@ class PandemicControlEnvironment:
     def __init__(self):
         # Environment parameters
         self.h = 0.05  # State discretization step
-        self.delta = 0.1  # Discount rate
+        self.delta = 0.05  # Discount rate
         
         # State and action spaces
         self.x_states = np.arange(self.h, 1.0, self.h)  # Infection rate states

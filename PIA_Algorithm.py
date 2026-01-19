@@ -1,9 +1,19 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Sep 16 17:36:49 2025
+
+@author: Ran Xu
+"""
+
 import numpy as np
 from scipy.integrate import solve_bvp
 from scipy.interpolate import interp1d
 from scipy.integrate import simpson
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from matplotlib.pyplot import cm
+plt.style.use('grayscale')
+
 
 class Problem_Solver:
 
@@ -18,11 +28,13 @@ class Problem_Solver:
                  delta = 0.05, 
                  a_0 = 0.5, 
                  a_1 = 5, # a_I
-                 a_2 = 2, # a^I_m - a^S_m
+                 a_2 = 2    , # a^I_m - a^S_m
                  a_3 = 5, # a_r
                  a_4 = 0.5, # a^S_m
-                 x_min = 0.01, 
-                 x_max = 0.99
+                 x_min = 0.05, 
+                 x_max = 0.95,
+                 eta_only = 1, # zero means remove the change of eta
+                 rho_only = 1 # zero means remove the change of rho
                  ): 
         
         # Parameters
@@ -48,7 +60,11 @@ class Problem_Solver:
         # Truncated boundaries of controlled SDE
         self.x_min = x_min
         self.x_max = x_max
-        self.x_grid = np.linspace(x_min, x_max, n)
+        self.x_grid = np.linspace(self.x_min, self.x_max, self.n)
+        
+        #index for whenther optimize eta and rho
+        self.eta_only = eta_only
+        self.rho_only = rho_only
 
     def b_func(self, x, eta, rho):
         """
@@ -74,7 +90,7 @@ class Problem_Solver:
         x_grid,
         eta,
         rho,
-        num_simulations = 10000, 
+        num_simulations = 2000, 
         T_stopped = 75, 
         if_plot = False
     ):
@@ -165,8 +181,8 @@ class Problem_Solver:
         Solve the Bellman equation using the shooting method with boundary value problem solver.
 
         Parameters:
-        - v0: Boundary condition at x=0.1.
-        - v1: Boundary condition at x=0.9.
+        - v0: Boundary condition at x=0.01.
+        - v1: Boundary condition at x=0.99.
         - eta: Control η.
         - rho: Control ρ.
         - if_plot: Whether to plot the solution.
@@ -210,18 +226,18 @@ class Problem_Solver:
             print("Solver failed to converge.")
 
         # x_sol = solution.x
-        v_sol, p_sol = solution.sol(x)  # Value function
+        v_sol, p_sol = solution.sol(x)# Value function
 
-        if if_plot:
-            plt.figure(figsize=(10, 8))
-            plt.plot(x, v_sol, label="Value Function")
-            # plt.plot(x, p_sol, label="Derivative of Value Function (dv/dx)", linestyle='--')
-            plt.xlabel("State (x)")
-            plt.ylabel("Value / Derivative")
-            plt.title("Solution to Bellman ODE")
-            plt.legend()
-            plt.grid()
-            plt.show()
+        # if if_plot:
+        #     plt.figure(figsize=(10, 8))
+        #     plt.plot(x, v_sol, label="Value Function")
+        #     # plt.plot(x, p_sol, label="Derivative of Value Function (dv/dx)", linestyle='--')
+        #     plt.xlabel("State (x)")
+        #     plt.ylabel("Value / Derivative")
+        #     plt.title("Solution to Bellman ODE")
+        #     plt.legend()
+        #     plt.grid()
+        #     plt.show()
 
         return x, v_sol, p_sol
 
@@ -248,7 +264,7 @@ class Problem_Solver:
         # Compute the normalized L2 norm
         return np.linalg.norm(y1_interp - y2_interp) / np.sqrt(len(self.x_grid))
 
-    def policy_improve(self, eta_guess, rho_guess, if_plot = False, if_compare = True): 
+    def policy_improve(self, eta_guess, rho_guess, if_plot = False, if_compare = False): 
         """
         Policy improvement step for the Bellman equation.
 
@@ -271,21 +287,21 @@ class Problem_Solver:
         error = []
 
         while True:
-            eta_new = np.clip(
+            eta_new = self.eta_only * np.clip(
                 1 - ((self.alpha * (1 - x) + 2 * self.beta * x * (1 - x)) * p_int) / (2 * (self.a_2 * x + self.a_4 + self.beta * x * (1 - x) * p_int)), 
-                0, 1)
-            # rho_new = np.clip(p_int / (2 * self.a_3), 0, 100)
-            # eta_new = eta_guess.copy()
-            rho_new = rho_guess.copy()
+                0, 1)\
+                + (1-self.eta_only)*eta_guess.copy()
+            rho_new = self.rho_only*(np.clip(p_int / (2 * self.a_3), 0, 100)) + (1-self.rho_only)*rho_guess.copy()
 
             v0_new = self.monte_carlo_value(self.x_min, x, eta_new, rho_new)
-            v1_le_new = self.monte_carlo_value(self.x_max - 0.01, self.x_grid, eta_new, rho_new)
+            v1_le_new = self.monte_carlo_value(self.x_max -0.01, self.x_grid, eta_new, rho_new)
             v1_mo_new = self.monte_carlo_value(self.x_max, self.x_grid, eta_new, rho_new)
             p1_new = (v1_mo_new - v1_le_new) / 0.01  # Numerical derivative at the right boundary
 
             x, v_update, p_update = self.Bellman_solver(x, v0_new, p1_new, eta_new, rho_new, if_plot=False)
+            steperror = self.L2_norm(x, x, v_int, v_update)
 
-            if self.L2_norm(x, x, v_int, v_update) <= self.tol_main:
+            if  steperror <= self.tol_main:
                 print(f"Updated value function: {v_update}")
                 print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
                 break
@@ -296,125 +312,156 @@ class Problem_Solver:
                 print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
                 break
 
-            error.append(self.L2_norm(x, x, v_int, v_update))
+            error.append(steperror)
             iter += 1
-            v_int = v_update
-            p_int = p_update
+            v_int = v_update.copy()
+            p_int = p_update.copy()
 
             print(f"------------------The {iter}th iteration done: The normalized L2 norm = {error[-1]}-------------------")
 
-        if if_plot:
+        if if_plot and self.eta_only and self.rho_only:
             # Plot the error in a separate figure
-            plt.figure(figsize=(6, 6))
-            plt.plot(range(len(error)), error, label="Error", color='blue', marker='o')
+            fig, ax = plt.subplots()
+            ax.plot(range(len(error)), np.sqrt(error), label="Error", color='blue', marker='o')
             plt.xlabel("Iteration")
-            plt.ylabel("Error")
+            plt.ylabel("Square root of Error")
             plt.title("Error Convergence", fontsize=14)
-            plt.grid()
             plt.legend()
-            plt.tight_layout()
+            plt.tight_layout()  
+            # fig.savefig('error_exp1.pdf')
             plt.show()
 
-            # Plot the value function in a separate figure
-            if if_compare:
-                plt.figure(figsize=(10, 6))
-                plt.plot(x_begin, v_begin, label="Initial Value Function", color='orange', linestyle='--')
-                plt.plot(x, v_update, label="Final Value Function", color='purple')
-                plt.xlabel("Cyber-Infected Ratio (x)")
-                plt.ylabel("Value Function")
-                plt.title("Comparison of Initial and Final Value Functions", fontsize=14)
-                plt.legend()
-                plt.tight_layout()
-                plt.show()
-
-            plt.figure(figsize=(6, 6))
-            plt.plot(x, v_update, label="Value Function", color='purple')
+            fig, ax = plt.subplots()
+            ax.plot(x, v_update, color='red')
             plt.xlabel("Cyber-Infected Ratio (x)")
             plt.ylabel("Value Function")
-            plt.title("Solution to Bellman ODE", fontsize=14) 
-            plt.legend()
-            plt.tight_layout()
+            # fig.savefig('value_exp1.pdf')
             plt.show()
 
-            # Plot the controls η and ρ in another separate figure
-            plt.figure(figsize=(6, 6))
+            fig, ax = plt.subplots()
             x_small = np.linspace(self.x_min + 0.01, self.x_max - 0.01, 500)
             eta_plotting = interp1d(x, eta_new, kind='cubic', fill_value='extrapolate')(x_small)
             rho_plotting = interp1d(x, rho_new, kind='cubic', fill_value='extrapolate')(x_small)
-            plt.plot(x_small, eta_plotting, label="Control η", color='blue')
-            plt.plot(x_small, rho_plotting, label="Control ρ", color='red')
+            ax.plot(x_small, eta_plotting, ls='-',label="Control " + r'$\eta $', color='blue')
+            ax.plot(x_small, rho_plotting, ls='--', label="Control "+ r'$\rho $', color='red')
             plt.xlabel("Cyber-Infected Ratio (x)")
             plt.ylabel("Optimal Control")
-            plt.title("Controls η and ρ over State", fontsize=14)  
+            # plt.title("Optimal Controls over State")  
             plt.legend()
-            plt.tight_layout()
+            # fig.savefig('policy-2_exp1.pdf')
             plt.show()
 
-        # x_update = x.copy()
+        elif if_plot and self.eta_only:
+            #plot value function police for eta 
+            fig, ax = plt.subplots()
+            ax.plot(x, v_update, color='red')
+            plt.xlabel("Cyber-Infected Ratio (x)")
+            plt.ylabel("Value Function")
+            # fig.savefig('value_exp1-etaonly.pdf')
+            plt.show()
+
+            fig, ax = plt.subplots()
+            x_small = np.linspace(self.x_min + 0.01, self.x_max - 0.01, 500)
+            eta_plotting = interp1d(x, eta_new, kind='cubic', fill_value='extrapolate')(x_small)
+            rho_plotting = interp1d(x, rho_new, kind='cubic', fill_value='extrapolate')(x_small)
+            ax.plot(x_small, eta_plotting, ls='-',label="Control " + r'$\eta $', color='blue')
+            ax.plot(x_small, rho_plotting, ls='--', label="Control "+ r'$\rho $', color='red')
+            plt.xlabel("Cyber-Infected Ratio (x)")
+            plt.ylabel("Optimal Control")
+            plt.legend()
+            # fig.savefig('policy-2_exp1-etaonly.pdf')
+            plt.show()
+            
+        elif if_plot and self.rho_only:
+            #plot value function police for rho 
+            fig, ax = plt.subplots()
+            ax.plot(x[1:], v_update[1:], color='red')
+            plt.xlabel("Cyber-Infected Ratio (x)")
+            plt.ylabel("Value Function")
+            # fig.savefig('value_exp1-rhoonly.pdf')
+            plt.show()
+
+            fig, ax = plt.subplots()
+            x_small = np.linspace(self.x_min + 0.01, self.x_max - 0.01, 500)
+            eta_plotting = interp1d(x, eta_new, kind='cubic', fill_value='extrapolate')(x_small)
+            rho_plotting = interp1d(x, rho_new, kind='cubic', fill_value='extrapolate')(x_small)
+            ax.plot(x_small, eta_plotting, ls='-',label="Control " + r'$\eta $', color='blue')
+            ax.plot(x_small, rho_plotting, ls='--', label="Control "+ r'$\rho $', color='red')
+            plt.xlabel("Cyber-Infected Ratio (x)")
+            plt.ylabel("Optimal Control")
+            plt.legend()
+            # fig.savefig('policy-2_exp1-rhoonly.pdf')
+            plt.show()
 
         return eta_new, rho_new, v_update
     
-    def sensitivity_analysis(self, x, x_upd, eta, rho, v, baseline_eta = 0.5, baseline_rho = 1, if_plot=True):
-        """
-        Perform sensitivity analysis on the value function with respect to the controls η and ρ.
+    # def sensitivity_analysis(self, x, x_upd, eta, rho, v, baseline_eta = 0.2, baseline_rho = 0.5, if_plot=True):
+    #     """
+    #     Perform sensitivity analysis on the value function with respect to the controls η and ρ.
 
-        Parameters:
-        - eta: Control η.
-        - rho: Control ρ.
-        - baseline: Baseline value for the controls (percentage perturbation).
-        - if_plot: Whether to plot the results.
+    #     Parameters:
+    #     - eta: Control η.
+    #     - rho: Control ρ.
+    #     - baseline: Baseline value for the controls (percentage perturbation).
+    #     - if_plot: Whether to plot the results.
 
-        Returns:
-        - sensitivity_results: A dictionary containing the value functions for perturbed controls.
-        """
-        # Define perturbations for η and ρ
-        perturbations = {
-            'eta_up': np.clip(eta + baseline_eta, 0, 1),
-            'eta_down': np.clip(eta - baseline_eta, 0, 1),
-            'rho_up': np.maximum(0, rho + baseline_rho),
-            'rho_down': np.maximum(0, rho - baseline_rho)
-        }
+    #     Returns:
+    #     - sensitivity_results: A dictionary containing the value functions for perturbed controls.
+    #     """
+    #     # Define perturbations for η and ρ
+    #     perturbations = {
+    #         'eta_up': np.clip(eta + baseline_eta, 0, 1),
+    #         'eta_down': np.clip(eta - baseline_eta, 0, 1),
+    #         'rho_up': np.maximum(0, rho + baseline_rho),
+    #         'rho_down': np.maximum(0, rho - baseline_rho)
+    #     }
 
-        # Compute the value function for each perturbation
-        sensitivity_results = {}
-        for key, perturbed_control in perturbations.items():
-            print(f'...............Starting sensitivity analysis for {key}..................')
-            if 'eta' in key:
-                # Perturb η while keeping ρ constant
-                v0 = self.monte_carlo_value(self.x_min, x, perturbed_control, rho)
-                v1 = self.monte_carlo_value(self.x_max, x, perturbed_control, rho)
-                x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, perturbed_control, rho)
-            elif 'rho' in key:
-                # Perturb ρ while keeping η constant
-                v0 = self.monte_carlo_value(self.x_min, x, eta, perturbed_control)
-                v1 = self.monte_carlo_value(self.x_max, x, eta, perturbed_control)
-                x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, eta, perturbed_control)
-            sensitivity_results[key] = (x_sensitive, value)
+    #     # Compute the value function for each perturbation
+    #     sensitivity_results = {}
+    #     for key, perturbed_control in perturbations.items():
+    #         print(f'...............Starting sensitivity analysis for {key}..................')
+    #         if 'eta' in key:
+    #             # Perturb η while keeping ρ constant
+    #             v0 = self.monte_carlo_value(self.x_min, x, perturbed_control, rho)
+    #             v1_le = self.monte_carlo_value(self.x_max - self.h, x, perturbed_control, rho)
+    #             v1_ri = self.monte_carlo_value(self.x_max, x, perturbed_control, rho)
+    #             p1 = (v1_ri - v1_le) / self.h 
+    #             #v1 = self.monte_carlo_value(self.x_max, x, perturbed_control, rho)
+    #             x_sensitive, value, _ = self.Bellman_solver(x, v0, p1, perturbed_control, rho)
+    #         elif 'rho' in key:
+    #             # Perturb ρ while keeping η constant
+    #             v0 = self.monte_carlo_value(self.x_min, x, eta, perturbed_control)
+    #             v1_le = self.monte_carlo_value(self.x_max - self.h, x, eta, perturbed_control)
+    #             v1_ri = self.monte_carlo_value(self.x_max, x, eta, perturbed_control)
+    #             p1 = (v1_ri - v1_le) / self.h 
+    #             #v1 = self.monte_carlo_value(self.x_max, x, eta, perturbed_control)
+    #             x_sensitive, value, _ = self.Bellman_solver(x, v0, p1, eta, perturbed_control)
+    #         sensitivity_results[key] = (x_sensitive, value)
 
-        # Plot the sensitivity analysis results if requested
-        if if_plot:
-            plt.figure(figsize=(10, 6))
+    #     # Plot the sensitivity analysis results if requested
+    #     # if if_plot:
+    #     #     plt.figure(figsize=(10, 6))
 
-            # Fetch the x and y values for each perturbation from dictionary
-            x_eta_up, y_eta_up = sensitivity_results['eta_up']
-            x_eta_down, y_eta_down = sensitivity_results['eta_down']
-            x_rho_up, y_rho_up = sensitivity_results['rho_up']
-            x_rho_down, y_rho_down = sensitivity_results['rho_down']
+    #     #     # Fetch the x and y values for each perturbation from dictionary
+    #     #     x_eta_up, y_eta_up = sensitivity_results['eta_up']
+    #     #     x_eta_down, y_eta_down = sensitivity_results['eta_down']
+    #     #     x_rho_up, y_rho_up = sensitivity_results['rho_up']
+    #     #     x_rho_down, y_rho_down = sensitivity_results['rho_down']
 
-            plt.plot(x_eta_up, y_eta_up, label="η Up", color='blue', linestyle='--')
-            plt.plot(x_eta_down, y_eta_down, label="η Down", color='blue', linestyle=':')
-            plt.plot(x_rho_up, y_rho_up, label="ρ Up", color='red', linestyle='--')
-            plt.plot(x_rho_down, y_rho_down, label="ρ Down", color='red', linestyle=':')
-            plt.plot(x_upd, v, label="Baseline", color='black')
-            plt.xlabel("State (x)")
-            plt.ylabel("Value Function")
-            plt.title("Sensitivity Analysis of Value Function")
-            plt.legend()
-            plt.grid()
-            plt.tight_layout()
-            plt.show()
+    #     #     plt.plot(x_eta_up, y_eta_up, label="η Up", color='blue', linestyle='--')
+    #     #     plt.plot(x_eta_down, y_eta_down, label="η Down", color='blue', linestyle=':')
+    #     #     plt.plot(x_rho_up, y_rho_up, label="ρ Up", color='red', linestyle='--')
+    #     #     plt.plot(x_rho_down, y_rho_down, label="ρ Down", color='red', linestyle=':')
+    #     #     plt.plot(x_upd, v, label="Baseline", color='black')
+    #     #     plt.xlabel("Cyber-Infected Ratio (x)")
+    #     #     plt.ylabel("Value Function")
+    #     #     plt.title("Sensitivity Analysis of Value Function")
+    #     #     plt.legend()
+    #     #     plt.grid()
+    #     #     plt.tight_layout()
+    #     #     plt.show()
 
-        return sensitivity_results
+    #     return sensitivity_results
 
     def sensitivity_steps(self, x, eta, rho, v, if_plot=True): 
         """
@@ -431,8 +478,8 @@ class Problem_Solver:
         - sensitivity_results: A dictionary containing the value functions for each stepwise perturbation.
         """
         # Define stepwise perturbations for η and ρ
-        eta_steps = [0.25, 0.5, 0.75]
-        rho_steps = [0.5, 1, 2]
+        eta_steps = [0.1, 0.2, 0.3, 0.4]
+        rho_steps = [0.5, 1, 1.5, 2]
 
         sensitivity_results = {}
 
@@ -440,15 +487,19 @@ class Problem_Solver:
         for step in eta_steps:
             perturbed_eta_plus = np.clip(eta + step, 0, 1)
             v0 = self.monte_carlo_value(self.x_min, x, perturbed_eta_plus, rho)
-            v1 = self.monte_carlo_value(self.x_max, x, perturbed_eta_plus, rho)
-            x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, perturbed_eta_plus, rho)
+            v1_le = self.monte_carlo_value(self.x_max - 0.01, x, perturbed_eta_plus, rho)
+            v1_ri = self.monte_carlo_value(self.x_max, x, perturbed_eta_plus, rho)
+            p1 = (v1_ri - v1_le) / 0.01
+            x_sensitive, value, _ = self.Bellman_solver(x, v0, p1, perturbed_eta_plus, rho)
             key = f"eta_plus_{step}"
             sensitivity_results[key] = (x_sensitive, value)
 
             perturbed_eta_down = np.clip(eta - step, 0, 1)
             v0 = self.monte_carlo_value(self.x_min, x, perturbed_eta_down, rho)
-            v1 = self.monte_carlo_value(self.x_max, x, perturbed_eta_down, rho)
-            x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, perturbed_eta_down, rho)
+            v1_le = self.monte_carlo_value(self.x_max - 0.01, x, perturbed_eta_down, rho)
+            v1_ri = self.monte_carlo_value(self.x_max, x, perturbed_eta_down, rho)
+            p1 = (v1_ri - v1_le) / 0.01 
+            x_sensitive, value, _ = self.Bellman_solver(x, v0, p1, perturbed_eta_down, rho)
             key = f"eta_down_{step}"
             sensitivity_results[key] = (x_sensitive, value)
 
@@ -456,74 +507,81 @@ class Problem_Solver:
         for step in rho_steps:
             perturbed_rho_plus = np.maximum(0, rho + step)
             v0 = self.monte_carlo_value(self.x_min, x, eta, perturbed_rho_plus)
-            v1 = self.monte_carlo_value(self.x_max, x, eta, perturbed_rho_plus)
-            x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, eta, perturbed_rho_plus)
+            v1_le = self.monte_carlo_value(self.x_max - self.h, x, eta, perturbed_rho_plus)
+            v1_ri = self.monte_carlo_value(self.x_max, x, eta, perturbed_rho_plus)
+            p1 = (v1_ri - v1_le) / 0.01
+            x_sensitive, value, _ = self.Bellman_solver(x, v0, p1, eta, perturbed_rho_plus)
             key = f"rho_plus_{step}"
             sensitivity_results[key] = (x_sensitive, value)
 
             perturbed_rho_down = np.maximum(0, rho - step)
             v0 = self.monte_carlo_value(self.x_min, x, eta, perturbed_rho_down)
-            v1 = self.monte_carlo_value(self.x_max, x, eta, perturbed_rho_down)
-            x_sensitive, value, _ = self.Bellman_solver(x, v0, v1, eta, perturbed_rho_down)
+            v1_le = self.monte_carlo_value(self.x_max - self.h, x, eta, perturbed_rho_down)
+            v1_ri = self.monte_carlo_value(self.x_max, x, eta, perturbed_rho_down)
+            p1 = (v1_ri - v1_le) / 0.01 
+            x_sensitive, value, _ = self.Bellman_solver(x, v0, p1, eta, perturbed_rho_down)
             key = f"rho_down_{step}"
             sensitivity_results[key] = (x_sensitive, value)
 
         # Plot eta_plus results in one figure
         if if_plot:
+            ls_list = ['--','-.',(0,(5,1)),(0,(3,1,1,1)),':']
+            color_list = ['r', 'g', 'b', 'm','c']
             # η plus
-            plt.figure(figsize=(10, 6))
-            plt.plot(x, v, label="Baseline", color='black')
-            for step in eta_steps:
+            fig, ax = plt.subplots()
+            ax.plot(x, v, label="Baseline", color='black')
+            for i, step in enumerate(eta_steps):
                 x_eta_plus, v_eta_plus = sensitivity_results[f"eta_plus_{step}"]
-                plt.plot(x_eta_plus, v_eta_plus, label=f"η + {step}", linestyle='--')
-            plt.xlabel("State (x)")
+                ax.plot(x_eta_plus, v_eta_plus, label= r'$\eta + $' + str(step), 
+                        linestyle=ls_list[i],color=color_list[i])
+            plt.xlabel("Cyber-Infected Ratio (x)")
             plt.ylabel("Value Function")
-            plt.title("Stepwise Sensitivity: η Increase")
+            #plt.title("Stepwise Sensitivity: η Increase")
             plt.legend()
-            plt.grid()
-            plt.tight_layout()
+            plt.ylim((15,100))
+            # fig.savefig('eta_up_exp1.pdf')
             plt.show()
 
             # η down
-            plt.figure(figsize=(10, 6))
-            plt.plot(x, v, label="Baseline", color='black')
-            for step in eta_steps:
+            fig, ax = plt.subplots()
+            ax.plot(x, v, label="Baseline", color='black')
+            for i, step in enumerate(eta_steps):
                 x_eta_down, v_eta_down = sensitivity_results[f"eta_down_{step}"]
-                plt.plot(x_eta_down, v_eta_down, label=f"η - {step}", linestyle=':')
-            plt.xlabel("State (x)")
+                ax.plot(x_eta_down, v_eta_down, label= r'$\eta - $' + str(step), 
+                        linestyle=ls_list[i],color=color_list[i])
+            plt.xlabel("Cyber-Infected Ratio (x)")
             plt.ylabel("Value Function")
-            plt.title("Stepwise Sensitivity: η Decrease")
+            #plt.title("Stepwise Sensitivity: η Decrease")
             plt.legend()
-            plt.grid()
-            plt.tight_layout()
+            # fig.savefig('eta_down_exp1.pdf')
             plt.show()
 
             # ρ plus
-            plt.figure(figsize=(10, 6))
-            plt.plot(x, v, label="Baseline", color='black')
-            for step in rho_steps:
+            fig, ax = plt.subplots()
+            ax.plot(x, v, label="Baseline", color='black')
+            for i, step in enumerate(rho_steps):
                 x_rho_plus, v_rho_plus = sensitivity_results[f"rho_plus_{step}"]
-                plt.plot(x_rho_plus, v_rho_plus, label=f"ρ + {step}", linestyle='--')
-            plt.xlabel("State (x)")
+                ax.plot(x_rho_plus, v_rho_plus, label=r'$\rho + $'+str(step), 
+                        linestyle=ls_list[i],color=color_list[i])
+            plt.xlabel("Cyber-Infected Ratio (x)")
             plt.ylabel("Value Function")
-            plt.title("Stepwise Sensitivity: ρ Increase")
+            #plt.title("Stepwise Sensitivity: ρ Increase")
             plt.legend()
-            plt.grid()
-            plt.tight_layout()
+            # fig.savefig('rho_up_exp1.pdf')
             plt.show()
 
             # ρ down
-            plt.figure(figsize=(10, 6))
-            plt.plot(x, v, label="Baseline", color='black')
-            for step in rho_steps:
+            fig, ax = plt.subplots()
+            ax.plot(x, v, label="Baseline", color='black')
+            for i, step in enumerate(rho_steps):
                 x_rho_down, v_rho_down = sensitivity_results[f"rho_down_{step}"]
-                plt.plot(x_rho_down, v_rho_down, label=f"ρ - {step}", linestyle=':')
-            plt.xlabel("State (x)")
+                ax.plot(x_rho_down, v_rho_down, label=r'$\rho - $'+ str(step), 
+                        linestyle=ls_list[i],color=color_list[i])
+            plt.xlabel("Cyber-Infected Ratio (x)")
             plt.ylabel("Value Function")
-            plt.title("Stepwise Sensitivity: ρ Decrease")
+            #plt.title("Stepwise Sensitivity: ρ Decrease")
             plt.legend()
-            plt.grid()
-            plt.tight_layout()
+            # fig.savefig('rho_down_exp1.pdf')
             plt.show()
 
         return sensitivity_results
@@ -546,11 +604,15 @@ class Problem_Solver:
         eta_list = []
         rho_list = []
         x = np.linspace(self.x_min + 0.01, self.x_max - 0.01, 500)
+        ls_list = ['--','-.',(0,(5,1)),(0,(3,1,1,1))]
+        color_list = ['r', 'g', 'b', 'm']
 
         for values in a_groups:
             # Set coefficients
+            #a^I_m=2.5
             self.a_4 = values
-            self.a_2 = 2.5 - values 
+            # self.a_4 = values
+            #self.a_2 = 2.5 - values 
 
             # Solve for optimal policy and value function
             eta_opt, rho_opt, _ = self.policy_improve(eta_init, rho_init, if_plot=False, if_compare=False)
@@ -558,86 +620,51 @@ class Problem_Solver:
             rho_interp = interp1d(self.x_grid, rho_opt, kind='cubic', fill_value='extrapolate')(x)
             eta_list.append(eta_interp)
             rho_list.append(rho_interp)
-            legends.append(f"a_m^S={values}")
+            # legends.append(f"a_m^S={values}")
+            legends.append(r'$a^S_m$'+"={}".format(values))
+        
+        fig, ax = plt.subplots()
+        for lsvalue, cvalue, eta, label in zip(ls_list, color_list, eta_list, legends):
+            ax.plot(x, eta,  label=label, linestyle=lsvalue, color=cvalue)
+            plt.xlabel("Cyber-Infected Ratio (x)")
+            plt.ylabel("Optimal Control" + r'$\eta$')
+            #plt.title("Stepwise Sensitivity: ρ Decrease")
+            ax.legend()
+            fig.savefig('compare_eta_aSm.pdf')
+            # plt.show()
 
-        fig, axs = plt.subplots(2, 1, figsize=(10, 15), sharex=True)
-
-        # Plot eta controls
-        for eta, label in zip(eta_list, legends):
-            axs[0].plot(x, eta, lw=2, label=label)
-        axs[0].set_ylabel("Control η")
-        axs[0].set_title("Optimal η for Different Groups")
-        axs[0].legend()
-
-        # Plot rho controls
-        for rho, label in zip(rho_list, legends):
-            axs[1].plot(x, rho, lw=2, label=label)
-        axs[1].set_xlabel("State (x)")
-        axs[1].set_ylabel("Control ρ")
-        axs[1].set_title("Optimal ρ for Different Groups")
-        axs[1].legend()
-
-        plt.tight_layout()
-        plt.show()
+        fig, ax = plt.subplots()
+        for lsvalue, cvalue, rho, label in zip(ls_list, color_list, rho_list, legends):
+            ax.plot(x, rho,  label=label, linestyle=lsvalue, color=cvalue )
+            plt.xlabel("Cyber-Infected Ratio (x)")
+            plt.ylabel("Optimal Control" + r'$\rho$')
+            #plt.title("Stepwise Sensitivity: ρ Decrease")
+            ax.legend()
+            fig.savefig('compare_rho_aSm.pdf')
+            # plt.show()
 
 def main():
     solver = Problem_Solver()
+    # # Define groups of (a1, a2, a3) to compare
+
+    # a_groups = [0.1, 0.25, 0.5, 0.95]
+    # solver.compare_a_groups(a_groups)
+   
     eta = 0 * np.ones(solver.n)
     rho = 0 * np.ones(solver.n)
-    eta, rho, v = solver.policy_improve(eta, rho, if_plot=True, if_compare=False)
+    _, _, v = solver.policy_improve(eta, rho, if_plot = False, if_compare = False)
 
-    # xs = [0.1, 0.3, 0.5, 0.7, 0.9]
-    # vs = []
+    xs = [0.1, 0.3, 0.5, 0.7, 0.9]
+    vs = []
 
-    # for x in xs:
-    #     idx = np.argmin(np.abs(solver.x_grid - x))
-    #     vs.append(v[idx])
-    # print(vs)
+    for x in xs:
+        idx = np.argmin(np.abs(solver.x_grid - x))
+        vs.append(v[idx])
+    print(vs)
 
-    # # Comparison of MC and Bellman value function at 10 points
-    # x_points = np.linspace(solver.x_min, solver.x_max, 10)
-    # v_mc = []
 
-    # for x0 in x_points:
-    #     val_mc = solver.monte_carlo_value(
-    #         x_initial=x0,
-    #         x_grid=solver.x_grid,
-    #         eta=eta,
-    #         rho=rho,
-    #         num_simulations=2000,
-    #         if_plot=False
-    #     )
-    #     v_mc.append(val_mc)
-
-    # # Interpolate Bellman value function to x_points for printing
-    # v_bellman = np.interp(x_points, solver.x_grid, v)
-
-    # # Print comparison
-    # print("x\tMC Value\tBellman Value")
-    # for xi, vmc, vbell in zip(x_points, v_mc, v_bellman):
-    #     print(f"{xi:.3f}\t{vmc:.4f}\t\t{vbell:.4f}")
-
-    # # Plot: MC points only, Bellman value function as curve
-    # import matplotlib.pyplot as plt
-    # plt.figure(figsize=(10, 6))
-    # plt.plot(solver.x_grid, v, '-', label='Bellman Value Function')  # continuous curve
-    # plt.scatter(x_points, v_mc, color='red', label='Monte Carlo Value (points)', zorder=5)  # points only
-    # plt.xlabel("State (x)")
-    # plt.ylabel("Value Function")
-    # plt.title("Monte Carlo Points vs Bellman Value Function")
-    # plt.legend()
-    # plt.grid()
-    # plt.tight_layout()
-    # plt.show()
-    # solver.monte_carlo_value(
-    #         x_initial=0.99,
-    #         x_grid=solver.x_grid,
-    #         eta=eta,
-    #         rho=rho,
-    #         num_simulations=2000,
-    #         if_plot=False
-    # )
-
+    
 # Run the main function if the script is executed directly
 if __name__ == "__main__":
     main()
+

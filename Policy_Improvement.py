@@ -23,8 +23,8 @@ class Problem_Solver:
                  a_2 = 2, # a^I_m - a^S_m
                  a_3 = 0.5, # a_r
                  a_4 = 0.5, # a^S_m
-                 x_min = 0.01, 
-                 x_max = 0.99
+                 x_min = 0.005, 
+                 x_max = 0.995
                  ): 
         
         # Parameters
@@ -216,19 +216,19 @@ class Problem_Solver:
             params = params
         )
         DGM_solver.train(n_epochs = 10000, n_collocation = 1000, print_every = 200, tol = 5e-3)
-        v_int = DGM_solver.predict()[0].flatten()  # Initial value function from DGM
-        p_int = DGM_solver.predict()[1].flatten()  # Initial derivative from DGM
+        v_int = DGM_solver.predict()[1].flatten()  # Initial value function from DGM
+        p_int = DGM_solver.predict()[2].flatten()  # Initial derivative from DGM
         
         iter = 0
         error = []
 
         while True:
-            # eta_new = np.clip(
-            #     1 - 
-            #     ((self.alpha * (1 - self.x_grid) + self.beta * self.x_grid * (1 - self.x_grid)) * p_int) 
-            #     / (2 * (self.a_2 * self.x_grid + self.a_4)), 
-            #     0, 1)
-            eta_new = eta_guess.copy()
+            eta_new = np.clip(
+                1 - 
+                ((self.alpha * (1 - self.x_grid) + self.beta * self.x_grid * (1 - self.x_grid)) * p_int) 
+                / (2 * (self.a_2 * self.x_grid + self.a_4)), 
+                0, 1)
+            # eta_new = eta_guess.copy()
             rho_new = np.clip(p_int / (2 * self.a_3), 0, 10)
 
             # Compute the new BC using the updated controls
@@ -241,22 +241,22 @@ class Problem_Solver:
             DGM_solver.v0_true = v0_new
             DGM_solver.v1_true = v1_new
 
-            DGM_solver.train(n_epochs = 10000, 
+            DGM_solver.train(n_epochs = 50000, 
                              n_collocation = 1000, 
                              print_every = 200, 
                              learning_rate = 1e-3, 
                              tol = 5e-3, 
-                             penalty = 0.01
+                             penalty = 0.1
                              )
-            v_update = DGM_solver.predict()[0].flatten()  # Update the value function from DGM
-            p_update = DGM_solver.predict()[1].flatten()  # Update the derivative from DGM
+            v_update = DGM_solver.predict()[1].flatten()  # Update the value function from DGM
+            p_update = DGM_solver.predict()[2].flatten()  # Update the derivative from DGM
 
             if self.L2_norm(v_int, v_update) <= self.tol_main: 
                 print(f"Updated value function: {v_update}")
                 print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")
                 break
 
-            if iter >= 2: 
+            if iter >= 5: 
                 print(f"Maximum iterations {iter} reached.")
                 print(f"Updated value function: {v_update}")
                 print(f"Updated controls: η = {eta_new}, ρ = {rho_new}")

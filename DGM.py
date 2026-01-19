@@ -26,20 +26,24 @@ class BellmanSolverDGM:
         self.v1_true = params.get("v1_true", 0.5)
         self.x0 = params.get("x0", 0.01) if "x0" in params else 0.01  # Default x0
         self.x1 = params.get("x1", 0.99) if "x1" in params else 0.99  # Default x1
-        self.n = params.get("n", 1000)  # Default number of collocation points
+        self.n = params.get("n", 100)  # Default number of collocation points
 
         # Interpolation functions for eta and rho
         self.eta_interp_np = interp1d(x_grid_np, eta_np, kind='cubic', fill_value='extrapolate')
         self.rho_interp_np = interp1d(x_grid_np, rho_np, kind='cubic', fill_value='extrapolate')
 
         # Neural network model
-        self.net = self.build_net(hidden_dim=50, num_layers=4).to(self.device)
+        self.net = self.build_net().to(self.device)
 
-    def build_net(self, hidden_dim = 256, num_layers = 8):
+    def build_net(self, hidden_dim = 32, num_layers = 1):
+
         layers = [nn.Linear(1, hidden_dim), nn.Tanh()]
+
         for _ in range(num_layers - 1):
             layers += [nn.Linear(hidden_dim, hidden_dim), nn.Tanh()]
+
         layers.append(nn.Linear(hidden_dim, 1))  # output linear
+
         return nn.Sequential(*layers)
 
     def b_func(self, x, eta, rho):
@@ -67,15 +71,15 @@ class BellmanSolverDGM:
         n_collocation=1000,
         print_every=200,
         tol=1e-3,
-        learning_rate=1e-3,
-        penalty=0.01
+        learning_rate=1e-4,
+        penalty=0.1
     ):
         epoch = 0
 
         self.optimizer = optim.AdamW(
             self.net.parameters(),
             lr=learning_rate,
-            weight_decay=1e-4  # typical weight decay to regularize
+            # weight_decay=1e-2  # typical weight decay to regularize
         )
 
         while True:
@@ -92,15 +96,16 @@ class BellmanSolverDGM:
 
             b_val = self.b_func(x, eta_vals, rho_vals)
             sigma_val = self.sigma_func(x)
+            weight = torch.clamp(1.0 / (sigma_val**2), max=1e3)
             f_val = self.f_func(x, eta_vals, rho_vals)
 
             # Regularization term
-            mean_sigma = 0.5 * sigma_val.pow(2).mean()
-            mean_rhs = (self.delta * V - b_val * dV_dx - f_val).abs().mean()
-            scale_factor = mean_rhs / mean_sigma
+            # mean_sigma = 0.5 * sigma_val.pow(2).mean()
+            # mean_rhs = (self.delta * V - b_val * dV_dx - f_val).abs().mean()
+            # scale_factor = mean_rhs / mean_sigma
 
             # Compute the residual of the Bellman equation
-            residual = scale_factor * (0.5 * sigma_val ** 2) * d2V_dx2 - (self.delta * V - b_val * dV_dx - f_val)
+            residual =  d2V_dx2 - 2 / sigma_val ** 2 * (self.delta * V - b_val * dV_dx - f_val)
             physics_loss = residual.pow(2).mean()
 
             # Boundary conditions loss
@@ -134,7 +139,8 @@ class BellmanSolverDGM:
         V.sum(), x, create_graph=False, retain_graph=True
         )[0]
 
-        return V.detach().cpu().numpy(), dV_dx.detach().cpu().numpy()
+        return x.detach().cpu().numpy(), V.detach().cpu().numpy(), dV_dx.detach().cpu().numpy()
+
 
 # ---------------------------
 # USAGE EXAMPLE
@@ -142,7 +148,7 @@ class BellmanSolverDGM:
 
 # Suppose you have your x_grid, eta, rho as numpy arrays from your PIA step:
 # (Replace these example arrays with your actual data)
-# x_grid_np = np.linspace(0.01, 0.99, 1000)
+# x_grid_np = np.linspace(0.01, 0.99, 100)
 # eta_np = np.ones_like(x_grid_np)  # Initial control function eta(x)
 # rho_np = np.ones_like(x_grid_np)  # Initial control function rho(x)
 
@@ -161,10 +167,11 @@ class BellmanSolverDGM:
 #     "v1_true": 40.3641   # Known boundary condition at x=1
 # }
 
+
 # solver = BellmanSolverDGM(x_grid_np, eta_np, rho_np, params)
 # solver.train(n_epochs = 10000, n_collocation=200)
 
-# x_vals, V_vals = solver.predict()
+# x_vals, V_vals, v_grad = solver.predict()
 
 # plt.plot(x_vals, V_vals, label="DGM Value Function")
 # plt.xlabel("x")
