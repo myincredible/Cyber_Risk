@@ -38,8 +38,9 @@ class PolicyNet(nn.Module):
         output1 = torch.sigmoid(outputs[:, 0])
         
         # For ρ: Sigmoid scaled to (0, M)
-        output2 = torch.exp(outputs[:, 1])  # (0, ∞)
-        output2 = self.M * output2 / (1 + output2)  # Soft clamp to (0, M)
+        # output2 = torch.exp(outputs[:, 1])  # (0, ∞)
+        # output2 = self.M * output2 / (1 + output2)  # Soft clamp to (0, M)
+        output2 = 0.5 * self.M * (torch.tanh(outputs[:, 1]) + 1)
         
         return output1, output2
     
