@@ -23,7 +23,7 @@ class PandemicControlEnvironment:
         self.beta = [0.2, 0.8]    # Secondary transmission effects
         self.gamma = [0.1, 0.2]   # Recovery rates  
         self.sigma_tilde = [0.15, 0.35]  # Volatility coefficients
-        self.q = np.array([[-1, 1], [1, -1]])  # Regime switching rates
+        self.q = np.array([[- 1, 1], [1, - 1]])  # Regime switching rates
         
         # Cost function parameters
         self.a0, self.aI, self.aS_m, self.aI_m, self.a_r = 0.0, 1.5, 0.5, 1.5, 1.0
@@ -193,19 +193,19 @@ def calculate_averaged_total_cost(env, num_episodes=1000, max_steps_per_episode=
     
     return averaged_total_cost, episode_costs
 
-# 使用示例
+# Example
 if __name__ == "__main__":
-    # 创建环境
+
     env = PandemicControlEnvironment()
     
-    print("计算平均总成本...")
+    print("Calculate the averaged costs...")
     averaged_cost, all_costs = calculate_averaged_total_cost(
         env, 
         num_episodes=500, 
         max_steps_per_episode = 500
     )
     
-    print(f"\n平均总成本: {averaged_cost:.4f}")
-    print(f"成本标准差: {np.std(all_costs):.4f}")
-    print(f"最小成本: {np.min(all_costs):.4f}")
-    print(f"最大成本: {np.max(all_costs):.4f}")
+    print(f"\nAveraged Total Costs {averaged_cost:.4f}")
+    print(f"STD: {np.std(all_costs):.4f}")
+    print(f"Min: {np.min(all_costs):.4f}")
+    print(f"Max: {np.max(all_costs):.4f}")

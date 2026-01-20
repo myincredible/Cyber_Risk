@@ -5,9 +5,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import Envir
 
-plt.style.use('grayscale')
-
-
 # =======================
 # Small Neural Networks
 # =======================
@@ -19,7 +16,7 @@ class ValueNet(nn.Module):
             nn.Sigmoid(),
             nn.Linear(hidden_dim, 1)
         )
-
+    
     def forward(self, x):
         return self.net(x).squeeze(-1)
 
@@ -40,7 +37,7 @@ class PolicyNet(nn.Module):
         
         output1 = torch.sigmoid(outputs[:, 0])
         
-        # For ρ: direct approach
+        # For ρ: Sigmoid scaled to (0, M)
         output2 = torch.exp(outputs[:, 1])  # (0, ∞)
         output2 = self.M * output2 / (1 + output2)  # Soft clamp to (0, M)
         
@@ -201,7 +198,7 @@ if __name__ == "__main__":
     env = Envir.PandemicControlEnvironment()
     ## lr_policy must be much smaller than lr_value!
     nfvi = FastNFVI(env, hidden_dim=16, lr_value = 5e-3, lr_policy=5e-4)  
-    
+
     n_iter = 10000
     for it in range(n_iter):
         value_loss = nfvi.train_iteration()
